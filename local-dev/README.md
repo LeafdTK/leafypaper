@@ -31,11 +31,50 @@ test session if you want to see the dry-run logs.
 ./local-dev/up.sh             # build jars, then docker compose up
 ./local-dev/up.sh --no-build  # skip the gradle build
 ./local-dev/up.sh logs        # tail container logs
-./local-dev/up.sh down        # tear down and wipe volumes
+./local-dev/up.sh down        # tear down (includes the bot fleet)
+./local-dev/up.sh stress      # launch the bot fleet against a running cluster
 ```
 
 First build takes 5–15 minutes (paperweight downloads upstream Purpur).
 Subsequent builds reuse Gradle's cache and are seconds.
+
+## Stress testing with synthetic bots
+
+There's a fourth container (`bots`) gated behind the `stress` compose
+profile so it doesn't run during a normal `up`. It launches a configurable
+mineflayer fleet that connects through the proxy and clusters near spawn.
+
+```bash
+# default fleet (30 bots)
+./local-dev/up.sh stress
+
+# 100 bots in a tight 4-block cluster, moving every half second
+BOT_COUNT=100 CLUSTER_RADIUS=4 JITTER_MS=500 ./local-dev/up.sh stress
+
+# detach so you can keep working
+docker compose -f local-dev/docker-compose.yml --profile stress up -d bots
+```
+
+Knobs (env vars):
+
+| Var               | Default  | What it does |
+|-------------------|----------|--------------|
+| `BOT_COUNT`       | 30       | total bots in the fleet |
+| `CLUSTER_RADIUS`  | 8        | bots roam inside this many blocks of the first spawn position |
+| `JITTER_MS`       | 2000     | how often each bot picks a new walk target |
+| `STAGGER_MS`      | 200      | delay between successive bot logins (avoid login pipeline storm) |
+
+The first bot's spawn point becomes the "cluster target" — every other
+bot walks toward that and jiggles. With `BOT_COUNT=100` and the master's
+threshold at the docker-compose default of 20, the hotspot coordinator
+will pick a transfer target within a few seconds.
+
+Tail the master log while the fleet is running to see the scheduler's
+breakdown of every transfer decision:
+
+```bash
+./local-dev/up.sh logs master
+```
 
 ## Files
 

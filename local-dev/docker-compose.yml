@@ -88,3 +88,25 @@ services:
           -Dmultipaper.hotspot.reportIntervalTicks=40 \
           -Xms1G -Xmx2G \
           -jar paperclip.jar nogui
+
+  # Synthetic player fleet for stress-testing. Not started by default —
+  # bring it up explicitly with one of:
+  #   docker compose --profile stress up bots          (rebuild on changes)
+  #   docker compose --profile stress up -d bots       (background)
+  #   BOT_COUNT=100 docker compose --profile stress up bots
+  bots:
+    profiles: ["stress"]
+    build:
+      context: ./bots
+    container_name: leafy-bots
+    depends_on:
+      - master
+      - server1
+      - server2
+    environment:
+      BOT_COUNT: "${BOT_COUNT:-30}"
+      MC_HOST: master
+      MC_PORT: "25577"
+      CLUSTER_RADIUS: "${CLUSTER_RADIUS:-8}"
+      JITTER_MS: "${JITTER_MS:-2000}"
+      STAGGER_MS: "${STAGGER_MS:-200}"

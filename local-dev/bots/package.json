@@ -1,0 +1,9 @@
+{
+  "name": "leafypaper-bots",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Synthetic player fleet for stress-testing leafypaper hotspot offload.",
+  "dependencies": {
+    "mineflayer": "^4.21.0"
+  }
+}
