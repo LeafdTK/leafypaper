@@ -363,6 +363,11 @@ public class ServerConnection extends MasterBoundMessageHandler {
     }
 
     @Override
+    public void handle(SubscribeRegionMessage message) {
+        SubscribeRegionHandler.handle(this, message);
+    }
+
+    @Override
     public void handle(SubscribeEntitiesMessage message) {
         SubscribeEntitiesHandler.handle(this, message);
     }

@@ -206,6 +206,25 @@ public class ChunkSubscriptionManager {
         }
     }
 
+    /**
+     * Subscribe a server to every chunk in the inclusive rectangle. Calls the
+     * existing per-chunk {@link #subscribe} path internally so all invariants
+     * (subscriber broadcasts, owner notification) are preserved. The win is
+     * purely upstream-bandwidth: 1 message replaces up to {@code w*h} messages.
+     *
+     * Intended for hot-region traffic where a server needs to mirror a 16x16
+     * block of chunks at once. Caller should still send individual
+     * {@code SubscribeChunkMessage}s for sparse, non-rectangular subscriptions.
+     */
+    public static void subscribeRegion(ServerConnection serverConnection, String world,
+                                       int cxLow, int cxHigh, int czLow, int czHigh) {
+        for (int cx = cxLow; cx <= cxHigh; cx++) {
+            for (int cz = czLow; cz <= czHigh; cz++) {
+                subscribe(serverConnection, world, cx, cz);
+            }
+        }
+    }
+
     public static void unsubscribe(ServerConnection serverConnection, String world, int cx, int cz) {
         unsubscribe(serverConnection, new ChunkKey(world, cx, cz));
     }

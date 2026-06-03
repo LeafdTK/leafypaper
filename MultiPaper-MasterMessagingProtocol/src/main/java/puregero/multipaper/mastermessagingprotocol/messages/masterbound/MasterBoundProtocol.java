@@ -29,6 +29,7 @@ public class MasterBoundProtocol extends Protocol<MasterBoundMessage> {
         addMessage(SetPortMessage.class, SetPortMessage::new);
         addMessage(StartMessage.class, StartMessage::new);
         addMessage(SubscribeChunkMessage.class, SubscribeChunkMessage::new);
+        addMessage(SubscribeRegionMessage.class, SubscribeRegionMessage::new);
         addMessage(SubscribeEntitiesMessage.class, SubscribeEntitiesMessage::new);
         addMessage(SyncChunkOwnerToAllMessage.class, SyncChunkOwnerToAllMessage::new);
         addMessage(SyncChunkSubscribersMessage.class, SyncChunkSubscribersMessage::new);

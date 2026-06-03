@@ -96,4 +96,6 @@ public abstract class MasterBoundMessageHandler extends MessageHandler<MasterBou
     public abstract void handle(ReportRegionDensityMessage message);
 
     public abstract void handle(RequestEntityIdBlock message);
+
+    public void handle(SubscribeRegionMessage message) {}
 }
