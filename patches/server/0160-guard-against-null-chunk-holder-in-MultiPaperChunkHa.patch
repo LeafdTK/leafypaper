@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 14:49:14 -0400
+Subject: [PATCH] guard against null chunk/holder in
+ MultiPaperChunkHandler.setBlock
+
+
+diff --git a/src/main/java/puregero/multipaper/MultiPaperChunkHandler.java b/src/main/java/puregero/multipaper/MultiPaperChunkHandler.java
+index 71d18b7b85c4df18b8d7e3fc959be67653278993..78ea0bdb0d05c165fbda3a02b247ea37400e2eb7 100644
+--- a/src/main/java/puregero/multipaper/MultiPaperChunkHandler.java
++++ b/src/main/java/puregero/multipaper/MultiPaperChunkHandler.java
+@@ -208,6 +208,14 @@ public class MultiPaperChunkHandler {
+     }
+ 
+     private static void setBlock(LevelChunk chunk, BlockPos pos, BlockState blockState) {
++        // Pre-existing static-field race: `blockUpdateChunk` and `holder`
++        // can be reset to null re-entrantly when chunk.setBlockState's side
++        // effects schedule another handleBlockUpdate on the main thread. Skip
++        // the update rather than crash; the chunk's authoritative server
++        // will re-emit it on the next regular sync.
++        if (chunk == null || holder == null) {
++            return;
++        }
+         BlockState oldState = chunk.setBlockState(pos, blockState, false, false);
+         holder.vanillaChunkHolder.blockChanged(pos);
+ 
