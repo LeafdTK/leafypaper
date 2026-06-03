@@ -1,5 +1,6 @@
 package puregero.multipaper.server.hotspot;
 
+import puregero.multipaper.mastermessagingprotocol.messages.serverbound.HotRegionsMessage;
 import puregero.multipaper.mastermessagingprotocol.messages.serverbound.TransferRegionOwnershipMessage;
 import puregero.multipaper.server.ChunkSubscriptionManager;
 import puregero.multipaper.server.ServerConnection;
@@ -79,6 +80,8 @@ public final class HotspotCoordinator {
         // Release sweep runs first so a cooled region frees its crowd server
         // before we look at the heat map for new candidates this cycle.
         sweepReleases();
+
+        broadcastHotRegions();
 
         List<HotRegion> hot = RegionDensityTracker.hottestAbove(HotspotConfig.THRESHOLD_PLAYERS);
         if (hot.isEmpty()) return;
@@ -223,6 +226,34 @@ public final class HotspotCoordinator {
             if (at.crowdServer() == candidate) count++;
         }
         return count;
+    }
+
+    /**
+     * Snapshot current hot regions (above the view-shrink threshold) and push
+     * them to every connected server so they can reduce per-player view and
+     * simulation distance for clients in those regions. Empty list = restore
+     * defaults. This is the cheap mitigation; runs alongside ownership
+     * transfer and is not gated by dry-run since it only changes per-player
+     * client streaming, not authoritative chunk state.
+     */
+    private static void broadcastHotRegions() {
+        List<HotRegion> hot = RegionDensityTracker.hottestAbove(HotspotConfig.VIEW_SHRINK_THRESHOLD_PLAYERS);
+        int n = hot.size();
+        String[] worlds = new String[n];
+        int[] rxs = new int[n];
+        int[] rzs = new int[n];
+        for (int i = 0; i < n; i++) {
+            HotRegion r = hot.get(i);
+            worlds[i] = r.world();
+            rxs[i] = r.rx();
+            rzs[i] = r.rz();
+        }
+        HotRegionsMessage msg = new HotRegionsMessage(
+                HotspotConfig.REGION_SIZE_CHUNKS,
+                HotspotConfig.DEFAULT_VIEW_DISTANCE, HotspotConfig.HOT_VIEW_DISTANCE,
+                HotspotConfig.DEFAULT_SIMULATION_DISTANCE, HotspotConfig.HOT_SIMULATION_DISTANCE,
+                worlds, rxs, rzs);
+        ServerConnection.broadcastAll(msg);
     }
 
     /** Drop any active-transfer entries owned by a disconnecting server. */

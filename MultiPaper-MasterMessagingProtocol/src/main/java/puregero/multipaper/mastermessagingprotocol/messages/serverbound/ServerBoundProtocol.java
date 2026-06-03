@@ -29,6 +29,7 @@ public class ServerBoundProtocol extends Protocol<ServerBoundMessage> {
         addMessage(KeyValueStringMapMessageReply.class, KeyValueStringMapMessageReply::new);
         addMessage(IntegerPairMessageReply.class, IntegerPairMessageReply::new);
         addMessage(TransferRegionOwnershipMessage.class, TransferRegionOwnershipMessage::new);
+        addMessage(HotRegionsMessage.class, HotRegionsMessage::new);
     }
 
 }

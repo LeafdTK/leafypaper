@@ -45,4 +45,6 @@ public abstract class ServerBoundMessageHandler extends MessageHandler<ServerBou
      * minimal handlers can ignore it.
      */
     public void handle(TransferRegionOwnershipMessage message) {}
+
+    public void handle(HotRegionsMessage message) {}
 }
