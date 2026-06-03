@@ -48,6 +48,30 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — optional multi-channel peer-to-peer connection
+
+**Patch:** `0156-add-optional-bulk-channel-for-peer-to-peer-connectio.patch`
+
+**What changed:** New opt-in config `peerConnection.separateBulkChannel = true` (defaults to false; behavior unchanged unless enabled). When enabled, each pair of peer servers establishes a second TCP socket dedicated to bulk traffic — large chunk transfers (`SendChunkPacket`), entity dumps (`SendEntitiesPacket`), and full-entity NBT (`EntityUpdateNBTPacket`). Realtime traffic (entity position updates, player actions, etc.) stays on the primary channel.
+
+**Why this addresses the freeze**: under heavy fighting + chunk activity, a single TCP socket can fill its send buffer with a 1MB chunk transfer; position updates queued behind it wait until the kernel acknowledges the chunk. Splitting bulk and realtime onto separate sockets means TCP-level head-of-line blocking can't cross lanes.
+
+**Severity:** **low** (when disabled: none; when enabled: low)
+
+**Why it could matter (gameplay) when enabled:**
+- Cross-lane ordering between the bulk and realtime channels is not preserved. A chunk transfer can land after a position update that was sent later. In practice this is fine — chunk arrival is processed asynchronously (`runSync` on receive); positions overwrite their target field; no chunk-to-position causal dependency exists.
+- If the bulk channel disconnects without taking the primary down, packets fall back to the primary. We log on bulk close but don't reconnect automatically — a follow-up will add that. Until then, after a bulk-only disconnect the peer pair effectively reverts to single-channel until both sides reconnect.
+- Wire-protocol extension is backward compatible: `HelloPacket` writes the `isBulkChannel` boolean only when set, and older readers see end-of-buffer and default to false. A mixed-version fleet still works (older peers just don't get the bulk channel).
+
+**What to test:**
+- Enable on all servers in the fleet (`peerConnection.separateBulkChannel: true`), kill+restart a peer, observe the log shows both "Connected to external server X" and "Opening bulk channel to X:Y" / "Attaching bulk channel for external server X". Confirm chunk transfers still complete and entity positions still sync.
+- 300-cluster fight with bulk channel enabled: verify mirrored players track smoothly even while chunks are being loaded.
+- Verify rolling deploy: a server with this config off and one with it on can still pair — the off-side just doesn't open the bulk leg.
+
+**Status:** Implemented. Compiles. Not load-tested. Bulk-channel reconnect logic is a known follow-up.
+
+---
+
 ## 2026-06-03 — bump Netty event-loop thread cap 3 → 8
 
 **Patch:** `0155-raise-default-netty-event-loop-thread-cap-from-3-to-.patch`

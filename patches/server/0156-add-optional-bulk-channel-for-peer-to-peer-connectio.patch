@@ -1,0 +1,401 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 14:02:41 -0400
+Subject: [PATCH] add optional bulk channel for peer-to-peer connections
+
+
+diff --git a/src/main/java/puregero/multipaper/ExternalServerConnection.java b/src/main/java/puregero/multipaper/ExternalServerConnection.java
+index 053bcb31128e2d4c2843444efcddf3611ddc44bf..24912609148deb59c4e1156d208c66d58e2dc04a 100644
+--- a/src/main/java/puregero/multipaper/ExternalServerConnection.java
++++ b/src/main/java/puregero/multipaper/ExternalServerConnection.java
+@@ -36,6 +36,14 @@ public class ExternalServerConnection extends ChannelInitializer<SocketChannel>
+     private static final Logger LOGGER = LogManager.getLogger(ExternalServerConnection.class.getSimpleName());
+ 
+     private Channel channel;
++    /**
++     * Optional secondary socket for bulk traffic (chunk transfers, NBT,
++     * file data). When non-null, {@link #send} routes packets where
++     * {@link ExternalServerPacket#isBulk()} returns true to this channel
++     * instead of the primary, so a large chunk transfer cannot head-of-line
++     * block a stream of entity position updates.
++     */
++    private volatile Channel bulkChannel;
+     public long nanoTime = 0;
+     public ExternalServer externalServer = null;
+     public final CompletableFuture<Void> onConnect = new CompletableFuture<>();
+@@ -47,6 +55,24 @@ public class ExternalServerConnection extends ChannelInitializer<SocketChannel>
+     public long lastPacketReceived = 0;
+     public final ConcurrentHashMap<ChunkKey, Consumer<DataInputStream>> entitiesCallbacks = new ConcurrentHashMap<>();
+ 
++    /** True on the initiator side when the bulk channel should be opened after the primary handshake completes. */
++    public boolean shouldOpenBulkChannel = false;
++    /** Remote host:port for opening the bulk channel. Populated by the initiator before connect. */
++    public String bulkChannelHost;
++    public int bulkChannelPort = -1;
++    /**
++     * When non-null, this {@link ExternalServerConnection} instance is the
++     * initiator-side bulk channel of {@code bulkChannelOf}. It does not
++     * receive normal traffic; its only job is to carry bulk packets back
++     * to {@code bulkChannelOf.bulkChannel}.
++     */
++    public ExternalServerConnection bulkChannelOf;
++
++    /** Mark this connection as the bulk leg of an existing primary connection. */
++    public void markAsBulk(ExternalServerConnection primary) {
++        this.bulkChannelOf = primary;
++    }
++
+     public ExternalServerConnection() {
+ 
+     }
+@@ -159,29 +185,54 @@ public class ExternalServerConnection extends ChannelInitializer<SocketChannel>
+     }
+ 
+     public void send(ExternalServerPacket packet) {
+-        if (!channel.isOpen()) {
+-            // Throw away — don't allocate an IOException + stack trace per send
+-            // on a closed channel. Channel state is observable via isOpen().
++        // Route bulk packets to the secondary channel when it's live. If the
++        // bulk channel isn't established yet (or has been torn down), fall
++        // back to the primary so we never drop traffic.
++        Channel target = channel;
++        if (packet.isBulk()) {
++            Channel bulk = bulkChannel;
++            if (bulk != null && bulk.isOpen()) {
++                target = bulk;
++            }
++        }
++        if (target == null || !target.isOpen()) {
+             return;
+         }
+-        // Once the handshake completes, onConnect stays done forever. Hot path
+-        // is "done" — avoid the CompletableFuture continuation allocation.
+         if (onConnect.isDone()) {
+-            dispatchSend(packet);
++            dispatchSend(target, packet);
+         } else {
+-            onConnect.thenRun(() -> dispatchSend(packet));
++            final Channel finalTarget = target;
++            onConnect.thenRun(() -> dispatchSend(finalTarget, packet));
+         }
+     }
+ 
+-    private void dispatchSend(ExternalServerPacket packet) {
++    private void dispatchSend(Channel target, ExternalServerPacket packet) {
+         lastPacketSent = System.currentTimeMillis();
+-        if (channel.eventLoop().inEventLoop()) {
+-            channel.writeAndFlush(packet);
++        if (target.eventLoop().inEventLoop()) {
++            target.writeAndFlush(packet);
+         } else {
+-            channel.eventLoop().execute(() -> channel.writeAndFlush(packet));
++            target.eventLoop().execute(() -> target.writeAndFlush(packet));
+         }
+     }
+ 
++    /**
++     * Called by {@link HelloPacket#handle} on the receiver side when a Hello
++     * marked {@code isBulkChannel=true} arrives. The new socket is attached
++     * to this primary connection as the bulk lane.
++     */
++    public void attachBulkChannel(Channel newBulkChannel) {
++        this.bulkChannel = newBulkChannel;
++        newBulkChannel.closeFuture().addListener(f -> {
++            if (this.bulkChannel == newBulkChannel) {
++                this.bulkChannel = null;
++            }
++        });
++    }
++
++    public Channel getBulkChannel() {
++        return bulkChannel;
++    }
++
+     public void tick() {
+         // Send the packets after each vanilla tick
+         synchronized (packetsToSend) {
+diff --git a/src/main/java/puregero/multipaper/MultiPaperConnection.java b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+index 0d3105056b51d1f93b198fda26fdf608046cf7d0..40271914b83212fc7831012b10f7434d7e7eff59 100644
+--- a/src/main/java/puregero/multipaper/MultiPaperConnection.java
++++ b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+@@ -248,7 +248,22 @@ public class MultiPaperConnection extends ServerBoundMessageHandler {
+         LOGGER.info("Connecting to external server " + message.host + ":" + message.port + "...");
+ 
+         ExternalServerConnection externalServerConnection = new ExternalServerConnection();
++        // The initiator is responsible for opening the optional bulk channel
++        // once the primary handshake completes (HelloPacket.onConnect honours
++        // this flag and the peerConnection.separateBulkChannel config).
++        externalServerConnection.shouldOpenBulkChannel = puregero.multipaper.config.MultiPaperConfiguration.get().peerConnection.separateBulkChannel;
++        externalServerConnection.bulkChannelHost = message.host;
++        externalServerConnection.bulkChannelPort = message.port;
++
++        connectToPeer(externalServerConnection, message.host, message.port);
++    }
+ 
++    /**
++     * Opens a TCP socket to a peer using the same bootstrap configuration we
++     * use for the primary connection. Shared by the primary handshake and the
++     * optional bulk-channel opener.
++     */
++    public void connectToPeer(ExternalServerConnection externalServerConnection, String host, int port) {
+         Bootstrap bootstrap = new Bootstrap();
+         bootstrap.option(ChannelOption.SO_KEEPALIVE, true);
+         bootstrap.handler(externalServerConnection);
+@@ -260,9 +275,9 @@ public class MultiPaperConnection extends ServerBoundMessageHandler {
+             bootstrap.channel(NioSocketChannel.class);
+         }
+ 
+-        bootstrap.connect(message.host, message.port).addListener(future -> {
++        bootstrap.connect(host, port).addListener(future -> {
+             if (future.isSuccess()) {
+-                externalServerConnection.sendMinecraftHandshake(message.host, secret, message.port);
++                externalServerConnection.sendMinecraftHandshake(host, secret, port);
+             } else if (future.cause() != null) {
+                 future.cause().printStackTrace();
+             }
+diff --git a/src/main/java/puregero/multipaper/config/MultiPaperConfiguration.java b/src/main/java/puregero/multipaper/config/MultiPaperConfiguration.java
+index d9ae084270c4259371e84246dbc68841ace99d18..580e8ad01f5808ce606295b302ab98be8dfad61e 100644
+--- a/src/main/java/puregero/multipaper/config/MultiPaperConfiguration.java
++++ b/src/main/java/puregero/multipaper/config/MultiPaperConfiguration.java
+@@ -52,6 +52,11 @@ public class MultiPaperConfiguration extends ConfigurationPart {
+     public class PeerConnection extends ConfigurationPart {
+         public int compressionThreshold = 0;
+         public int consolidationDelay = 0;
++        // When true, each peer pair opens a second TCP socket dedicated to
++        // bulk transfers (chunks, NBT, file data). Realtime traffic (entity
++        // position updates, player actions) stays on the primary channel so a
++        // large chunk transfer can never head-of-line block a position update.
++        public boolean separateBulkChannel = false;
+     }
+ 
+     public Optimizations optimizations;
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateNBTPacket.java b/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateNBTPacket.java
+index d8577ae2759359324384c59d433ba12fc204cb4a..b2bcaa7aa75347aa12b6eb45c84809f4baa47161 100644
+--- a/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateNBTPacket.java
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateNBTPacket.java
+@@ -24,6 +24,11 @@ public class EntityUpdateNBTPacket extends ExternalServerPacket {
+ 
+     private static final Logger LOGGER = LogManager.getLogger(EntityUpdateNBTPacket.class.getSimpleName());
+ 
++    @Override
++    public boolean isBulk() {
++        return true;
++    }
++
+     private final String world;
+     private final UUID uuid;
+     private final byte[] data;
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/ExternalServerPacket.java b/src/main/java/puregero/multipaper/externalserverprotocol/ExternalServerPacket.java
+index 1a11a2f97e72936cf936d058e6d2a9183390f773..7ed552510b8c2ab57cb1bc793f98c73ab5eae6ff 100644
+--- a/src/main/java/puregero/multipaper/externalserverprotocol/ExternalServerPacket.java
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/ExternalServerPacket.java
+@@ -9,4 +9,13 @@ public abstract class ExternalServerPacket {
+ 
+     public abstract void write(FriendlyByteBuf out);
+ 
++    /**
++     * Whether this packet should travel on the bulk lane when multi-channel
++     * P2P is enabled. Bulk packets are large and latency-tolerant (chunk
++     * transfers, NBT, file data). The default is realtime — only override
++     * for genuinely bulky packets so realtime traffic stays small and fast.
++     */
++    public boolean isBulk() {
++        return false;
++    }
+ }
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/HelloPacket.java b/src/main/java/puregero/multipaper/externalserverprotocol/HelloPacket.java
+index 2441eb28b97f930d4ec798c5b35954b497aae877..c6ed8cac3c9a29e09b8535ac2616ac74d44f42c8 100644
+--- a/src/main/java/puregero/multipaper/externalserverprotocol/HelloPacket.java
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/HelloPacket.java
+@@ -32,21 +32,37 @@ public class HelloPacket extends ExternalServerPacket {
+     private final String bungeecordName;
+     private final long nanoTime;
+     private final int supportedCompressionFlags;
++    /**
++     * Set true when this Hello arrives on a connection that should be attached
++     * as the bulk lane of an existing primary connection rather than treated
++     * as a new primary. Backward-compatible: serialized as a trailing optional
++     * field; older readers see EOF after the compression flags and default to
++     * false, which preserves single-channel behavior.
++     */
++    private final boolean isBulkChannel;
+ 
+     public HelloPacket(String bungeecordName, int supportedCompressionFlags) {
+-        this(bungeecordName, System.nanoTime(), supportedCompressionFlags);
++        this(bungeecordName, System.nanoTime(), supportedCompressionFlags, false);
+     }
+ 
+     public HelloPacket(String bungeecordName, long nanoTime, int supportedCompressionFlags) {
++        this(bungeecordName, nanoTime, supportedCompressionFlags, false);
++    }
++
++    public HelloPacket(String bungeecordName, long nanoTime, int supportedCompressionFlags, boolean isBulkChannel) {
+         this.bungeecordName = bungeecordName;
+         this.nanoTime = nanoTime;
+         this.supportedCompressionFlags = supportedCompressionFlags;
++        this.isBulkChannel = isBulkChannel;
+     }
+ 
+     public HelloPacket(FriendlyByteBuf in) {
+         bungeecordName = in.readUtf();
+         nanoTime = in.readLong();
+         supportedCompressionFlags = in.readVarInt();
++        // Optional trailing flag for multi-channel P2P. Older clients don't
++        // send it; we read only if bytes remain in the buffer.
++        isBulkChannel = in.isReadable() && in.readBoolean();
+     }
+ 
+     @Override
+@@ -54,16 +70,63 @@ public class HelloPacket extends ExternalServerPacket {
+         out.writeUtf(bungeecordName);
+         out.writeLong(nanoTime);
+         out.writeVarInt(supportedCompressionFlags);
++        // Only write the optional flag when it's set, so we don't bloat the
++        // wire for the common case and we stay backward-readable for peers
++        // that haven't been upgraded yet (their reader simply stops here).
++        if (isBulkChannel) {
++            out.writeBoolean(true);
++        }
++    }
++
++    public boolean isBulkChannel() {
++        return isBulkChannel;
++    }
++
++    public String getBungeecordName() {
++        return bungeecordName;
++    }
++
++    public long getNanoTime() {
++        return nanoTime;
+     }
+ 
+     @Override
+     public void handle(ExternalServerConnection connection) {
+         connection.externalServer = MultiPaper.getConnection().getOrCreateServer(bungeecordName);
+ 
++        // Initiator-side bulk leg: this connection was opened to carry bulk
++        // traffic for an existing primary. Respond with a Hello marked
++        // isBulkChannel=true (matching the primary's nanoTime) so the remote
++        // side attaches the socket to its primary instead of treating it as
++        // a new peering. Once compression init completes, register this
++        // socket as the primary's outbound bulk channel locally.
++        if (connection.bulkChannelOf != null) {
++            ExternalServerConnection primary = connection.bulkChannelOf;
++            initCompression(connection, ready -> {
++                ready.getChannel().writeAndFlush(new HelloPacket(
++                        MultiPaperConfiguration.get().masterConnection.myName,
++                        primary.nanoTime,
++                        ready.getSupportedCompressionFlags(),
++                        true /* isBulkChannel */));
++                primary.attachBulkChannel(ready.getChannel());
++            });
++            return;
++        }
++
+         ExternalServerConnection previousConnection = connection.externalServer.getConnection();
++
++        // Receiver-side: a Hello marked isBulkChannel is the second leg of
++        // an already-established peering. Attach this socket as the primary
++        // connection's bulk channel and skip the normal new-connection flow.
++        if (isBulkChannel && previousConnection != null && previousConnection.nanoTime == nanoTime) {
++            LOGGER.info("Attaching bulk channel for external server " + bungeecordName);
++            initCompression(connection, attached -> previousConnection.attachBulkChannel(attached.getChannel()));
++            return;
++        }
++
+         if (previousConnection == null || previousConnection.nanoTime < nanoTime) {
+             LOGGER.info("Connected to external server " + bungeecordName);
+-            initCompression(connection);
++            initCompression(connection, c -> {});
+             connection.externalServer.setConnection(connection);
+             onConnect(connection);
+         } else if (previousConnection.nanoTime == nanoTime) {
+@@ -80,7 +143,7 @@ public class HelloPacket extends ExternalServerPacket {
+         }
+     }
+ 
+-    private void initCompression(ExternalServerConnection connection) {
++    private void initCompression(ExternalServerConnection connection, java.util.function.Consumer<ExternalServerConnection> onReady) {
+         int compressionType = 0;
+         ChannelOutboundHandlerAdapter compressionHandler = null;
+ 
+@@ -107,10 +170,14 @@ public class HelloPacket extends ExternalServerPacket {
+                         .addFirst("prepender", new MessageLengthEncoder());
+ 
+                 // Wait for the other side to initiate the compression
+-                CompletableFuture.delayedExecutor(100, TimeUnit.MILLISECONDS).execute(() -> connection.onConnect.complete(null));
++                CompletableFuture.delayedExecutor(100, TimeUnit.MILLISECONDS).execute(() -> {
++                    connection.onConnect.complete(null);
++                    onReady.accept(connection);
++                });
+             });
+         } else {
+             connection.onConnect.complete(null);
++            onReady.accept(connection);
+         }
+     }
+ 
+@@ -120,6 +187,15 @@ public class HelloPacket extends ExternalServerPacket {
+             connection.send(new HelloPacket(MultiPaperConfiguration.get().masterConnection.myName, nanoTime, connection.getSupportedCompressionFlags()));
+         }
+ 
++        // Multi-channel P2P: initiator opens the bulk lane after the primary
++        // handshake completes. Receiver does nothing here — its bulkChannel
++        // gets attached when the second Hello arrives.
++        if (connection.shouldOpenBulkChannel
++                && MultiPaperConfiguration.get().peerConnection.separateBulkChannel
++                && connection.bulkChannelHost != null) {
++            openBulkChannel(connection);
++        }
++
+         MultiPaper.runSync(() -> {
+             for (World world : Bukkit.getWorlds()) {
+                 connection.send(new SubscribeToWorldPacket(world.getName()));
+@@ -136,6 +212,14 @@ public class HelloPacket extends ExternalServerPacket {
+         }
+     }
+ 
++    private void openBulkChannel(ExternalServerConnection primary) {
++        ExternalServerConnection bulkConnection = new ExternalServerConnection();
++        bulkConnection.markAsBulk(primary);
++
++        LOGGER.info("Opening bulk channel to " + primary.bulkChannelHost + ":" + primary.bulkChannelPort);
++        MultiPaper.getConnection().connectToPeer(bulkConnection, primary.bulkChannelHost, primary.bulkChannelPort);
++    }
++
+     private void sendScoreboard(ServerScoreboard scoreboard, ExternalServerConnection connection) {
+         String scoreboardId = null;
+ 
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/SendChunkPacket.java b/src/main/java/puregero/multipaper/externalserverprotocol/SendChunkPacket.java
+index 8ed4aebd2a08e9dbcb1e5d17fe30eadb87428a74..5413426e6b40edce9003fdd7372b4e2827922204 100644
+--- a/src/main/java/puregero/multipaper/externalserverprotocol/SendChunkPacket.java
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/SendChunkPacket.java
+@@ -28,6 +28,11 @@ public class SendChunkPacket extends ExternalServerPacket {
+ 
+     private static final Logger LOGGER = LogManager.getLogger(SendChunkPacket.class.getSimpleName());
+ 
++    @Override
++    public boolean isBulk() {
++        return true;
++    }
++
+     private final String world;
+     private final int cx;
+     private final int cz;
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/SendEntitiesPacket.java b/src/main/java/puregero/multipaper/externalserverprotocol/SendEntitiesPacket.java
+index 8842391e3949104b0a77959327597e656a6eafca..fe01ae104bf1896390fc303918a39fb8e2cfcfcb 100644
+--- a/src/main/java/puregero/multipaper/externalserverprotocol/SendEntitiesPacket.java
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/SendEntitiesPacket.java
+@@ -32,6 +32,11 @@ public class SendEntitiesPacket extends ExternalServerPacket {
+ 
+     private static final Logger LOGGER = LogManager.getLogger(SendEntitiesPacket.class.getSimpleName());
+ 
++    @Override
++    public boolean isBulk() {
++        return true;
++    }
++
+     private final String world;
+     private final int cx;
+     private final int cz;
