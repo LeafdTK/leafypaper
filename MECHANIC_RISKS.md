@@ -10,6 +10,29 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — week 1: master broadcasts `HotRegionsMessage` for view-distance shrinking
+
+**Files:**
+- `MultiPaper-MasterMessagingProtocol/.../HotRegionsMessage.java` (new)
+- `MultiPaper-Master/.../hotspot/HotspotCoordinator.java` — `broadcastHotRegions()` runs each loop tick
+- `MultiPaper-Master/.../hotspot/HotspotConfig.java` — `VIEW_SHRINK_THRESHOLD_PLAYERS`, `HOT_VIEW_DISTANCE`, `HOT_SIMULATION_DISTANCE` knobs
+
+**What changed (master side):** Every hotspot-loop tick, the master sends every connected server the current list of hot regions plus the view/sim distance to apply for clients inside them. Default no-op on the server until the matching server-side patch lands.
+
+**Severity:** **none** (today: server ignores the message)
+
+**TODO (server-side patch follow-up):** add a `patches/server/00XX-Apply-hot-region-view-distance.patch` that:
+- Overrides `MultiPaperConnection`'s `ServerBoundMessageHandler.handle(HotRegionsMessage)` to cache the latest hot-region snapshot
+- On the player-tick hook (or chunk-load), checks if the player's `(world, chunkX>>regionShift, chunkZ>>regionShift)` is in the snapshot
+- If yes: `player.setViewDistance(hotViewDistance)` + `setSimulationDistance(hotSimulationDistance)`; else: defaults
+- Apply hysteresis: only change distance when crossing the snapshot boundary, not every tick
+
+**What to test once server-side lands:** drop 100 bots into a 16x16 region with threshold=40 and observe each bot's effective view distance reduce from 10 to 4 within one hotspot-loop interval.
+
+**Status:** master-side broadcast in place; server-side patch not yet written.
+
+---
+
 ## 2026-06-03 — Tier 0 item 1: removed busy-wait in `MultiPaperConnection.send()`
 
 **Patch:** `patches/server/0007-Add-MultiPaperConnection.patch`
