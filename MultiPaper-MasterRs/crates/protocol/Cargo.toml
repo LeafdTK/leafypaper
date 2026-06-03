@@ -1,0 +1,13 @@
+[package]
+name = "multipaper-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+thiserror = { workspace = true }
+uuid = { workspace = true }
+
+[dev-dependencies]
+hex-literal = "0.4"
