@@ -48,6 +48,45 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — hotspot offload step 3: handover state machine (still dry-run gated)
+
+**Files added / modified:**
+- `MultiPaper-Server/.../HotspotHandover.java` (new)
+- `MultiPaper-Server/.../MultiPaperConnection.java` — dispatches the transfer message to `HotspotHandover.claimRegion`
+- `MultiPaper-MasterMessagingProtocol/.../LockChunkMessage.java` — extended with optional trailing `force` flag (wire-compat: older writers don't emit, older readers default to false)
+- `MultiPaper-Master/.../handlers/LockChunkHandler.java` — passes `force` through to `ChunkSubscriptionManager.lock`
+- Patch `0159-claim-chunks-on-TransferRegionOwnership-receive.patch`
+
+**What this completes:**
+When the crowd server receives `TransferRegionOwnershipMessage`, it now actually claims the region. For each of the 256 chunks in `(rx*16..rx*16+15, rz*16..rz*16+15)`:
+1. Sends `SubscribeChunkMessage` → master tells the current owner to ship chunk data via the existing peer-to-peer chunk delivery path.
+2. Sends `LockChunkMessage(force=true)` → master force-promotes the crowd server to chunk owner and broadcasts `SetChunkOwnerMessage` to all subscribers (including the previous owner).
+3. The previous owner's existing `SetChunkOwnerMessage` handler releases ticking responsibility automatically — this hooks into infrastructure that already exists for normal player chunk-boundary crossings, so the path is well-trodden.
+
+Steady-state operationalization is now **one config flip away**: set `multipaper.hotspot.crowdServers=...` and `multipaper.hotspot.dryRun=false`.
+
+**Severity:** **medium** (when enabled)
+- 256 subscribe + 256 lock messages per region per transfer — that's 512 master-bound sends in a tight loop. All async via the pending queue we added earlier, so no main-thread block. Could briefly spike master ingress.
+- The crowd server starts ticking entities + simulating physics for the region as soon as ownership flips, before chunk data fully arrives. Existing chunk-not-loaded checks in handler paths should swallow this (mob spawns and entity ticks gate on chunk full status), but it's worth observing during the first staged rollout.
+- A piston / hopper / dispenser straddling the region edge might receive block updates from both old and new owner during the ~1–2s handover window. Vanilla / Purpur logic should idempotently apply, but redstone systems running active chains during the exact transfer moment are the highest-risk gameplay scenario.
+- The reverse path is NOT YET implemented — once a region transfers to a crowd server, it stays there. This is fine for short events but means crowd servers gradually accumulate dormant ownership of cooled-down regions over time. A periodic "release low-density region" sweep is the planned follow-up.
+
+**What to test:**
+- Single transfer at low population (e.g. 10-player threshold): verify the crowd server logs "claiming region", the master broadcasts new ownership, and players observe stable mirroring across servers throughout.
+- Pistons + hopper chain straddling a region boundary mid-transfer.
+- 100 players standing in spawn → trigger transfer → observe stable TPS on crowd server, no entity duplication or vanish.
+- Crowd server dies mid-transfer: chunks should fall back to whichever server has subscribers (existing chunk-orphan logic handles this).
+
+**Still on the roadmap (post-this-commit):**
+- Reverse path: detect cooled-down regions and transfer back to original owner.
+- Hysteresis on the threshold so we don't flap around the boundary.
+- Crowd server health/load awareness in the selection policy.
+- Per-region cooldown window is currently 60s — needs tuning under real load.
+
+**Status:** Handover loop implemented. Gated by dry-run. Awaits a staged rollout.
+
+---
+
 ## 2026-06-03 — hotspot offload step 2: transfer protocol (dry-run by default)
 
 **Files added:**

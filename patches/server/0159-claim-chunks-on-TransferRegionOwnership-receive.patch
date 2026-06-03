@@ -1,0 +1,104 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 14:19:27 -0400
+Subject: [PATCH] claim chunks on TransferRegionOwnership receive
+
+
+diff --git a/src/main/java/puregero/multipaper/HotspotHandover.java b/src/main/java/puregero/multipaper/HotspotHandover.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..a9780607028e9bf8d821ffdea958e1c04ba28e01
+--- /dev/null
++++ b/src/main/java/puregero/multipaper/HotspotHandover.java
+@@ -0,0 +1,70 @@
++package puregero.multipaper;
++
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ServerLevel;
++import org.apache.logging.log4j.LogManager;
++import org.apache.logging.log4j.Logger;
++import puregero.multipaper.mastermessagingprotocol.messages.masterbound.LockChunkMessage;
++import puregero.multipaper.mastermessagingprotocol.messages.masterbound.SubscribeChunkMessage;
++import puregero.multipaper.mastermessagingprotocol.messages.serverbound.TransferRegionOwnershipMessage;
++
++/**
++ * Handles a {@link TransferRegionOwnershipMessage} on the receiving (crowd)
++ * server by claiming every chunk in the region.
++ *
++ * Sequence per chunk:
++ *   1. {@link SubscribeChunkMessage} — current owner ships chunk data to us
++ *      via the existing subscription path. Eventually delivered as a
++ *      {@code SendChunkPacket} on the P2P connection.
++ *   2. {@link LockChunkMessage} with {@code force=true} — master promotes
++ *      us to chunk owner, broadcasts {@code SetChunkOwnerMessage} to all
++ *      subscribers including the previous owner.
++ *
++ * The previous owner's existing {@code SetChunkOwnerMessage} handler
++ * already releases ticking responsibility on owner change (patches 0027 /
++ * 0032), so no explicit "stop ticking" message is needed.
++ *
++ * 256 chunks per region × send-pair × 20 servers worst case = ~10240 sends,
++ * issued in a tight loop. All sends go through the async queue, so the
++ * main thread isn't blocked.
++ */
++public final class HotspotHandover {
++
++    private static final Logger LOGGER = LogManager.getLogger(HotspotHandover.class.getSimpleName());
++
++    private HotspotHandover() {}
++
++    public static void claimRegion(TransferRegionOwnershipMessage message) {
++        // Resolve the world: prefer matching by name to avoid relying on UUIDs
++        // (this message carries the bukkit/level name, the same form used by
++        // SubscribeChunkMessage).
++        ServerLevel target = null;
++        if (MinecraftServer.getServer() != null) {
++            for (ServerLevel level : MinecraftServer.getServer().getAllLevels()) {
++                if (level.getWorld().getName().equals(message.world)) {
++                    target = level;
++                    break;
++                }
++            }
++        }
++        if (target == null) {
++            LOGGER.warn("[hotspot] cannot claim region: world '{}' is not loaded on this server", message.world);
++            return;
++        }
++
++        int regionSize = message.regionSizeChunks;
++        int chunkXStart = message.rx * regionSize;
++        int chunkZStart = message.rz * regionSize;
++        LOGGER.info("[hotspot] claiming region world={} rx={} rz={} ({} chunks)",
++                message.world, message.rx, message.rz, regionSize * regionSize);
++
++        for (int dx = 0; dx < regionSize; dx++) {
++            for (int dz = 0; dz < regionSize; dz++) {
++                int cx = chunkXStart + dx;
++                int cz = chunkZStart + dz;
++                MultiPaper.getConnection().send(new SubscribeChunkMessage(message.world, cx, cz));
++                MultiPaper.getConnection().send(new LockChunkMessage(message.world, cx, cz, true));
++            }
++        }
++    }
++}
+diff --git a/src/main/java/puregero/multipaper/MultiPaperConnection.java b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+index 1d7a42f2d37b548d2aa85683bc0ceeec674147e2..cd55f70499173ce5192fbf761ca7ffd84bfbf40f 100644
+--- a/src/main/java/puregero/multipaper/MultiPaperConnection.java
++++ b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+@@ -480,13 +480,12 @@ public class MultiPaperConnection extends ServerBoundMessageHandler {
+ 
+     @Override
+     public void handle(puregero.multipaper.mastermessagingprotocol.messages.serverbound.TransferRegionOwnershipMessage message) {
+-        // Hotspot offload: master is asking us to take ownership of every
+-        // chunk in (world, rx, rz). The actual lock/subscribe loop is the
+-        // job of the handover state machine (next step). For now log
+-        // receipt so the dry-run path on the master can be observed
+-        // end-to-end before any chunk state changes hands.
+         LOGGER.info("[hotspot] received TransferRegionOwnership for world={} rx={} rz={} regionSize={}",
+                 message.world, message.rx, message.rz, message.regionSizeChunks);
++        // The actual claim runs on the main thread because it reads world
++        // state (ServerLevel lookup). The subscribe/lock sends themselves
++        // are already async via the master connection's pending queue.
++        MultiPaper.runSync(() -> HotspotHandover.claimRegion(message));
+     }
+ 
+     @Override
