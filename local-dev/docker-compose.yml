@@ -1,0 +1,90 @@
+# Local 3-server leafypaper cluster: 1 master + 2 game servers behind the
+# master's built-in proxy. Bring it up with `./local-dev/up.sh` from the repo
+# root — that script builds the JARs first and then runs `docker compose up`.
+#
+# Connect to localhost:25577 (the proxy port) in your Minecraft 1.20.1 client.
+#
+# All servers share the same world via the master. With both game servers
+# running you can stand on the chunk boundary and walk between server
+# instances.
+
+services:
+  master:
+    image: eclipse-temurin:17-jre
+    container_name: leafy-master
+    working_dir: /work
+    volumes:
+      - ../build/libs:/jars:ro
+      - ./master:/work
+    ports:
+      # Master listens on 35353 for game server connections, 25577 for the
+      # built-in proxy serving Minecraft clients.
+      - "127.0.0.1:35353:35353"
+      - "127.0.0.1:25577:25577"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eux
+        cp /jars/multipaper-master-*-all.jar multipaper-master.jar
+        # Args: <bind-address>:<master-port> <proxy-port>
+        # No explicit crowdServers list — homogeneous mode picks any
+        # connected server (mirrors a Kubernetes deployment where every pod is
+        # identical). Override with -Dmultipaper.hotspot.crowdServers=name1,...
+        # if you want a reserved pool.
+        exec java \
+          -Dmultipaper.hotspot.thresholdPlayers=20 \
+          -Dmultipaper.hotspot.releaseThresholdPlayers=10 \
+          -Dmultipaper.hotspot.dryRun=true \
+          -jar multipaper-master.jar 0.0.0.0:35353 25577
+
+  server1:
+    image: eclipse-temurin:17-jre
+    container_name: leafy-server1
+    working_dir: /work
+    depends_on:
+      - master
+    volumes:
+      - ../build/libs:/jars:ro
+      - ./server1:/work
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eux
+        cp /jars/multipaper-paperclip-*-reobf.jar paperclip.jar
+        # The reporter and (eventually) coordinator both need to know the
+        # master's address. server.properties online-mode is irrelevant in a
+        # behind-proxy setup but Paper still wants it set.
+        exec java \
+          -Dmultipaper.master-connection.my-name=server1 \
+          -Dmultipaper.master-connection.master-address=master:35353 \
+          -Dmultipaper.hotspot.regionSizeChunks=16 \
+          -Dmultipaper.hotspot.reportIntervalTicks=40 \
+          -Xms1G -Xmx2G \
+          -jar paperclip.jar nogui
+
+  server2:
+    image: eclipse-temurin:17-jre
+    container_name: leafy-server2
+    working_dir: /work
+    depends_on:
+      - master
+    volumes:
+      - ../build/libs:/jars:ro
+      - ./server2:/work
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eux
+        cp /jars/multipaper-paperclip-*-reobf.jar paperclip.jar
+        # Identical to server1 — in homogeneous mode the master picks a
+        # transfer target based on current load, not a hardcoded role.
+        exec java \
+          -Dmultipaper.master-connection.my-name=server2 \
+          -Dmultipaper.master-connection.master-address=master:35353 \
+          -Dmultipaper.hotspot.regionSizeChunks=16 \
+          -Dmultipaper.hotspot.reportIntervalTicks=40 \
+          -Xms1G -Xmx2G \
+          -jar paperclip.jar nogui

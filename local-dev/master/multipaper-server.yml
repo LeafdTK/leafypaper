@@ -1,0 +1,5 @@
+# MultiPaper-Master config (this file is optional — the master also accepts
+# the same settings via -D system properties on the command line).
+#
+# All defaults from the master are good for local testing; this file is here
+# as a placeholder so configs can be edited without rebuilding the image.
