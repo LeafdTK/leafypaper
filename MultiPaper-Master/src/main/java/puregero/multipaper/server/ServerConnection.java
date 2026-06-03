@@ -145,6 +145,14 @@ public class ServerConnection extends MasterBoundMessageHandler {
             connections.remove(this);
         }
 
+        // Release any players this server still claimed in the global index,
+        // so a reconnect or failover can re-claim them without false negatives.
+        synchronized (playerUUIDs) {
+            for (UUID uuid : playerUUIDs) {
+                playerOwners.remove(uuid, this);
+            }
+        }
+
         System.out.println(ctx.channel().remoteAddress() + " (" + name + ") closed");
     }
 
@@ -156,19 +164,58 @@ public class ServerConnection extends MasterBoundMessageHandler {
         return timer;
     }
 
+    /**
+     * Global UUID -> owning ServerConnection index. Lets PlayerConnectHandler
+     * answer "is this player already online somewhere?" in O(1) instead of
+     * scanning every ServerConnection under a synchronized list. Critical at
+     * 1500-player scale where join bursts (e.g. hotspot rebalance, mass login)
+     * would otherwise serialise on the connections lock.
+     */
+    private static final ConcurrentHashMap<UUID, ServerConnection> playerOwners = new ConcurrentHashMap<>();
+
     public boolean hasPlayer(UUID uuid) {
         synchronized (playerUUIDs) {
             return playerUUIDs.contains(uuid);
         }
     }
 
+    public static ServerConnection getPlayerOwner(UUID uuid) {
+        return playerOwners.get(uuid);
+    }
+
+    /**
+     * Atomically claim a player UUID for this server. Returns true on success;
+     * false means another (still-alive) server already owns the player.
+     */
+    public boolean claimPlayer(UUID uuid) {
+        ServerConnection prev = playerOwners.putIfAbsent(uuid, this);
+        if (prev != null && prev != this) {
+            // Stale claim from a dead server — take it over.
+            if (!prev.isOnline() || !connections.contains(prev)) {
+                if (playerOwners.replace(uuid, prev, this)) {
+                    prev.removePlayer(uuid);
+                } else {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        synchronized (playerUUIDs) {
+            playerUUIDs.add(uuid);
+        }
+        return true;
+    }
+
     public boolean addPlayer(UUID uuid) {
+        playerOwners.put(uuid, this);
         synchronized (playerUUIDs) {
             return playerUUIDs.add(uuid);
         }
     }
 
     public boolean removePlayer(UUID uuid) {
+        playerOwners.remove(uuid, this);
         synchronized (playerUUIDs) {
             return playerUUIDs.remove(uuid);
         }

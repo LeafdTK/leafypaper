@@ -23,102 +23,126 @@ package puregero.multipaper.server.util;
  *
  */
 
-// A simple cache and wrapper for efficiently multiple RegionFiles simultaneously.
+// A concurrent cache and wrapper for efficiently sharing RegionFiles.
 
 import java.io.*;
 import java.lang.ref.*;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 
 public class RegionFileCache {
 
     private static final int MAX_CACHE_SIZE = Integer.getInteger("max.regionfile.cache.size", 256);
 
-    private static final LinkedHashMap<File, Reference<RegionFile>> cache = new LinkedHashMap<>(16, 0.75f, true);
+    // Open RegionFile handles, keyed by canonical file. ConcurrentHashMap so reads
+    // never block. Eviction order is tracked separately in `lruOrder` (newest at
+    // tail) — best-effort LRU, not strict, but avoids a class-wide lock.
+    private static final ConcurrentHashMap<File, Reference<RegionFile>> cache = new ConcurrentHashMap<>();
+    private static final ConcurrentLinkedDeque<File> lruOrder = new ConcurrentLinkedDeque<>();
 
     private RegionFileCache() {
     }
 
-    public static synchronized boolean isRegionFileOpen(File regionDir, int chunkX, int chunkZ) {
-        File file = new File(regionDir, "r." + (chunkX >> 5) + "." + (chunkZ >> 5) + ".mca");
-
-        file = canonical(file);
-
+    public static boolean isRegionFileOpen(File regionDir, int chunkX, int chunkZ) {
+        File file = canonical(new File(regionDir, "r." + (chunkX >> 5) + "." + (chunkZ >> 5) + ".mca"));
         Reference<RegionFile> ref = cache.get(file);
-
-        if (ref != null && ref.get() != null) {
-            return true;
-        }
-
-        return false;
+        return ref != null && ref.get() != null;
     }
 
     private static File canonical(File file) {
         try {
-            // Remove any .'s and ..'s
             return new File(file.getCanonicalPath());
         } catch (IOException e) {
             e.printStackTrace();
             return file;
         }
     }
-    
+
     private static File getFileForRegionFile(File regionDir, int chunkX, int chunkZ) {
         return new File(regionDir, "r." + (chunkX >> 5) + "." + (chunkZ >> 5) + ".mca");
     }
 
-    public static synchronized RegionFile getRegionFileIfExists(File regionDir, int chunkX, int chunkZ) {
-        File file = getFileForRegionFile(regionDir, chunkX, chunkZ);
-
-        file = canonical(file);
+    public static RegionFile getRegionFileIfExists(File regionDir, int chunkX, int chunkZ) {
+        File file = canonical(getFileForRegionFile(regionDir, chunkX, chunkZ));
 
         Reference<RegionFile> ref = cache.get(file);
-
-        if (ref != null && ref.get() != null) {
-            return ref.get();
+        if (ref != null) {
+            RegionFile rf = ref.get();
+            if (rf != null) {
+                touch(file);
+                return rf;
+            }
         }
 
         if (file.isFile()) {
             return getRegionFile(regionDir, chunkX, chunkZ);
-        } else {
-            return null;
         }
+        return null;
     }
 
-    public static synchronized RegionFile getRegionFile(File regionDir, int chunkX, int chunkZ) {
-        File file = getFileForRegionFile(regionDir, chunkX, chunkZ);
-
-        file = canonical(file);
+    public static RegionFile getRegionFile(File regionDir, int chunkX, int chunkZ) {
+        File file = canonical(getFileForRegionFile(regionDir, chunkX, chunkZ));
 
         Reference<RegionFile> ref = cache.get(file);
-
-        if (ref != null && ref.get() != null) {
-            return ref.get();
+        if (ref != null) {
+            RegionFile rf = ref.get();
+            if (rf != null) {
+                touch(file);
+                return rf;
+            }
         }
 
         if (!regionDir.exists()) {
             regionDir.mkdirs();
         }
 
-        if (cache.size() >= MAX_CACHE_SIZE) {
+        // Atomic open-if-absent. computeIfAbsent guarantees the RegionFile
+        // constructor runs exactly once per key even under concurrent callers.
+        final File canonicalFile = file;
+        Reference<RegionFile> stored = cache.compute(canonicalFile, (k, existing) -> {
+            if (existing != null && existing.get() != null) {
+                return existing;
+            }
+            return new SoftReference<>(new RegionFile(k));
+        });
+
+        lruOrder.addLast(canonicalFile);
+        if (cache.size() > MAX_CACHE_SIZE) {
             clearOne();
         }
 
-        RegionFile reg = new RegionFile(file);
-        cache.put(file, new SoftReference<>(reg));
-        return reg;
+        return stored.get();
     }
 
-    private static synchronized void clearOne() {
-        Map.Entry<File, Reference<RegionFile>> clearEntry = cache.entrySet().iterator().next();
-        cache.remove(clearEntry.getKey());
-        try {
-            RegionFile removeFile = clearEntry.getValue().get();
-            if (removeFile != null) {
-                removeFile.close();
+    private static void touch(File file) {
+        // Best-effort LRU bump. We just append; drift between cache size and
+        // deque size is corrected during eviction by skipping stale entries.
+        lruOrder.addLast(file);
+    }
+
+    private static void clearOne() {
+        // Walk LRU front, pop until we find a key actually present in the cache.
+        // This costs O(drift) but drift is bounded by how often `touch` ran.
+        for (int i = 0; i < 32; i++) {
+            File victim = lruOrder.pollFirst();
+            if (victim == null) {
+                return;
             }
-        } catch (IOException e) {
-            e.printStackTrace();
+            Reference<RegionFile> ref = cache.remove(victim);
+            if (ref == null) {
+                continue;
+            }
+            RegionFile rf = ref.get();
+            if (rf != null) {
+                try {
+                    rf.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+                return;
+            }
         }
     }
 

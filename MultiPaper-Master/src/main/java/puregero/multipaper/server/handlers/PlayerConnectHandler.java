@@ -4,23 +4,12 @@ import puregero.multipaper.mastermessagingprotocol.messages.masterbound.PlayerCo
 import puregero.multipaper.mastermessagingprotocol.messages.serverbound.BooleanMessageReply;
 import puregero.multipaper.server.ServerConnection;
 
-import java.util.List;
-
 public class PlayerConnectHandler {
     public static void handle(ServerConnection connection, PlayerConnectMessage message) {
-        List<ServerConnection> connections = ServerConnection.getConnections();
-
-        synchronized (connections) {
-            for (ServerConnection otherConnection : connections) {
-                if (otherConnection != connection && otherConnection.hasPlayer(message.uuid)) {
-                    connection.sendReply(new BooleanMessageReply(false), message);
-                    return;
-                }
-            }
-
-            connection.addPlayer(message.uuid);
-        }
-
-        connection.sendReply(new BooleanMessageReply(true), message);
+        // O(1) atomic claim via the global UUID -> owner index. Replaces the old
+        // synchronized-list scan that serialised every player join across the
+        // whole cluster.
+        boolean claimed = connection.claimPlayer(message.uuid);
+        connection.sendReply(new BooleanMessageReply(claimed), message);
     }
 }
