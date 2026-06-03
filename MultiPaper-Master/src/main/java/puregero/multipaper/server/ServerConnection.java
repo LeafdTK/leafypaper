@@ -368,6 +368,11 @@ public class ServerConnection extends MasterBoundMessageHandler {
     }
 
     @Override
+    public void handle(EntitiesForHandoffMessage message) {
+        EntitiesForHandoffHandler.handle(this, message);
+    }
+
+    @Override
     public void handle(SubscribeEntitiesMessage message) {
         SubscribeEntitiesHandler.handle(this, message);
     }

@@ -30,6 +30,7 @@ public class MasterBoundProtocol extends Protocol<MasterBoundMessage> {
         addMessage(StartMessage.class, StartMessage::new);
         addMessage(SubscribeChunkMessage.class, SubscribeChunkMessage::new);
         addMessage(SubscribeRegionMessage.class, SubscribeRegionMessage::new);
+        addMessage(EntitiesForHandoffMessage.class, EntitiesForHandoffMessage::new);
         addMessage(SubscribeEntitiesMessage.class, SubscribeEntitiesMessage::new);
         addMessage(SyncChunkOwnerToAllMessage.class, SyncChunkOwnerToAllMessage::new);
         addMessage(SyncChunkSubscribersMessage.class, SyncChunkSubscribersMessage::new);

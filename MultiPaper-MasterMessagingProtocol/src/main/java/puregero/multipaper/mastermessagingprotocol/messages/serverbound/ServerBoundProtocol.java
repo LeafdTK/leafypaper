@@ -30,6 +30,8 @@ public class ServerBoundProtocol extends Protocol<ServerBoundMessage> {
         addMessage(IntegerPairMessageReply.class, IntegerPairMessageReply::new);
         addMessage(TransferRegionOwnershipMessage.class, TransferRegionOwnershipMessage::new);
         addMessage(HotRegionsMessage.class, HotRegionsMessage::new);
+        addMessage(RequestEntitiesForHandoffMessage.class, RequestEntitiesForHandoffMessage::new);
+        addMessage(TransferEntitiesMessage.class, TransferEntitiesMessage::new);
     }
 
 }

@@ -117,6 +117,12 @@ public final class HotspotCoordinator {
                         " (total=" + region.total() + ", " + chunks.length + " live chunks) to " + crowd.getBungeeCordName() +
                         " score=" + decision.score() + " (" + decision.breakdown() + ")");
             } else {
+                for (long packed : chunks) {
+                    int cx = (int) (packed >> 32);
+                    int cz = (int) packed;
+                    ServerConnection oldOwner = ChunkSubscriptionManager.getOwner(region.world(), cx, cz);
+                    EntityHandoffCoordinator.beginHandoff(oldOwner, crowd, region.world(), cx, cz);
+                }
                 crowd.send(new TransferRegionOwnershipMessage(region.world(), region.rx(), region.rz(),
                         HotspotConfig.REGION_SIZE_CHUNKS, chunks));
                 System.out.println("[hotspot] transferred region " + key +
@@ -259,6 +265,7 @@ public final class HotspotCoordinator {
     /** Drop any active-transfer entries owned by a disconnecting server. */
     public static void forgetServer(ServerConnection server) {
         active.entrySet().removeIf(e -> e.getValue().crowdServer() == server);
+        EntityHandoffCoordinator.forgetServer(server);
     }
 
     private static String[] parsePool(String raw) {

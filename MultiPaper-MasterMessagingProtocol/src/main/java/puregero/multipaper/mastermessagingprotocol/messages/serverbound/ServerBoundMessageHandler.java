@@ -47,4 +47,8 @@ public abstract class ServerBoundMessageHandler extends MessageHandler<ServerBou
     public void handle(TransferRegionOwnershipMessage message) {}
 
     public void handle(HotRegionsMessage message) {}
+
+    public void handle(RequestEntitiesForHandoffMessage message) {}
+
+    public void handle(TransferEntitiesMessage message) {}
 }

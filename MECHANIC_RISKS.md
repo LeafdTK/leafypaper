@@ -10,6 +10,32 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — week 3-4: master orchestrates entity handoff on hotspot transfer
+
+**Files:**
+- `MultiPaper-MasterMessagingProtocol/.../serverbound/RequestEntitiesForHandoffMessage.java` (new)
+- `MultiPaper-MasterMessagingProtocol/.../serverbound/TransferEntitiesMessage.java` (new)
+- `MultiPaper-MasterMessagingProtocol/.../masterbound/EntitiesForHandoffMessage.java` (new)
+- `MultiPaper-Master/.../hotspot/EntityHandoffCoordinator.java` (new) — 3-hop orchestrator with 2s timeout
+- `MultiPaper-Master/.../hotspot/HotspotCoordinator.java` — `beginHandoff()` called before `TransferRegionOwnershipMessage`
+
+**What changed (master side):** For every live chunk being transferred during a hotspot offload, master now asks the old owner for an entity NBT blob and forwards it to the new owner. Today the server-side handlers are no-ops, so the message round-trip is exercised but the new owner still falls back to disk NBT.
+
+**Severity:** **none** (today: server-side handlers do nothing)
+
+**TODO (server-side patches):** Two patches in `patches/server/`:
+1. **Old-owner side:** override `handle(RequestEntitiesForHandoffMessage)` to walk live entities in the chunk, write each to NBT with `CompoundTag` (including AI goals, momentum, equipment, effects), pack into one byte array, reply with `EntitiesForHandoffMessage`.
+2. **New-owner side:** override `handle(TransferEntitiesMessage)` to deserialise the blob and `level.addFreshEntity()` each entity before the chunk's next tick. Guard against duplicate spawn if the chunk was already re-read from disk (skip entities whose UUID is already loaded).
+
+**What to test once server-side lands:**
+- Spawn a zombie with a player target, force a hotspot transfer of the chunk, verify the zombie keeps its target and continues attacking instead of resetting AI.
+- Spawn a creeper that's begun its fuse, transfer mid-fuse, verify fuse continues from same tick rather than resetting.
+- Concurrent transfers: trigger 10 chunk handoffs simultaneously, verify no entity duplication and no entities are dropped.
+
+**Status:** master orchestration in place + timeout cleanup + disconnect cleanup; server-side patches not yet written.
+
+---
+
 ## 2026-06-03 — week 1: master broadcasts `HotRegionsMessage` for view-distance shrinking
 
 **Files:**
