@@ -52,8 +52,10 @@ public final class HotspotCoordinator {
     /** Wire the loop up. Called once from the master bootstrap. */
     public static synchronized void start() {
         if (scheduler != null) return;
-        if (CROWD_POOL.length == 0 && !HotspotConfig.DRY_RUN) {
-            System.out.println("[hotspot] coordinator: no crowd servers configured, staying in dry-run logging only");
+        if (CROWD_POOL.length == 0) {
+            System.out.println("[hotspot] coordinator: no explicit crowd pool — running in homogeneous mode (load-balance across all connected servers)");
+        } else {
+            System.out.println("[hotspot] coordinator: explicit crowd pool of " + CROWD_POOL.length + " server(s)");
         }
         scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "hotspot-coordinator");
@@ -91,20 +93,23 @@ public final class HotspotCoordinator {
                 continue; // still in cooldown window
             }
 
-            ServerConnection crowd = pickCrowdServer();
-            if (crowd == null) {
-                System.out.println("[hotspot] no eligible crowd server for region " + key + " (total=" + region.total() + ")");
+            HotspotScheduler.Decision decision = pickCrowdServer(key);
+            if (decision == null) {
+                System.out.println("[hotspot] no eligible candidate for region " + key + " (total=" + region.total() + ")");
                 return;
             }
+            ServerConnection crowd = decision.chosen();
 
             if (HotspotConfig.DRY_RUN) {
                 System.out.println("[hotspot] DRY-RUN would transfer region " + key +
-                        " (total=" + region.total() + ") to crowd server " + crowd.getBungeeCordName());
+                        " (total=" + region.total() + ") to " + crowd.getBungeeCordName() +
+                        " score=" + decision.score() + " (" + decision.breakdown() + ")");
             } else {
                 crowd.send(new TransferRegionOwnershipMessage(region.world(), region.rx(), region.rz(),
                         HotspotConfig.REGION_SIZE_CHUNKS));
                 System.out.println("[hotspot] transferred region " + key +
-                        " (total=" + region.total() + ") to crowd server " + crowd.getBungeeCordName());
+                        " (total=" + region.total() + ") to " + crowd.getBungeeCordName() +
+                        " score=" + decision.score() + " (" + decision.breakdown() + ")");
                 active.put(key, new ActiveTransfer(crowd, 0L));
             }
             lastTransferAt.put(key, now);
@@ -165,14 +170,44 @@ public final class HotspotCoordinator {
         System.out.println("[hotspot] released region " + key + " from crowd server " + crowdServer.getBungeeCordName());
     }
 
-    private static ServerConnection pickCrowdServer() {
-        for (String name : CROWD_POOL) {
-            ServerConnection candidate = ServerConnection.getConnection(name);
-            if (candidate != null && candidate.isOnline()) {
-                return candidate;
+    /**
+     * Pick the best server to take over a hot region. Two-phase scheduler:
+     *
+     *   <li>If {@code multipaper.hotspot.crowdServers} is set, restrict the
+     *   candidate set to that explicit pool — useful when you have reserved
+     *   spare-capacity pods. Then run the scoring scheduler over them.
+     *
+     *   <li>Otherwise (the homogeneous-Kubernetes default), the candidate set
+     *   is every connected server. The scheduler scores each by load, TPS
+     *   headroom, player count, and locality, then picks the highest score.
+     *
+     * Returns {@code null} when no candidate survives the filter — the
+     * coordinator logs and skips the cycle in that case.
+     */
+    private static HotspotScheduler.Decision pickCrowdServer(RegionDensityTracker.RegionKey region) {
+        ServerConnection currentOwner = ChunkSubscriptionManager.getOwner(
+                region.world(), region.rx() * HotspotConfig.REGION_SIZE_CHUNKS, region.rz() * HotspotConfig.REGION_SIZE_CHUNKS);
+
+        List<ServerConnection> candidates;
+        if (CROWD_POOL.length > 0) {
+            candidates = new java.util.ArrayList<>(CROWD_POOL.length);
+            for (String name : CROWD_POOL) {
+                ServerConnection sc = ServerConnection.getConnection(name);
+                if (sc != null) candidates.add(sc);
             }
+        } else {
+            candidates = ServerConnection.getConnections();
         }
-        return null;
+
+        return HotspotScheduler.pick(region, candidates, currentOwner, HotspotCoordinator::countActiveTransfers);
+    }
+
+    private static int countActiveTransfers(ServerConnection candidate) {
+        int count = 0;
+        for (ActiveTransfer at : active.values()) {
+            if (at.crowdServer() == candidate) count++;
+        }
+        return count;
     }
 
     /** Drop any active-transfer entries owned by a disconnecting server. */

@@ -48,6 +48,31 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — hotspot offload step 5: kubernetes-style scoring scheduler
+
+**Files added / modified:**
+- `MultiPaper-Master/.../hotspot/HotspotScheduler.java` (new)
+- `MultiPaper-Master/.../hotspot/HotspotCoordinator.java` — uses the scheduler
+
+**What changed:**
+- Removed the assumption that a separate "crowd server" pool exists. The default deployment shape is now homogeneous: every connected server is a candidate (matches a Kubernetes deployment where all pods are identical).
+- New `HotspotScheduler` runs k8s-scheduler-style two-phase selection:
+  - **Filter** drops candidates that are offline, are themselves the current owner of the hot region, or have TPS below `multipaper.hotspot.minTps` (default 17 — already struggling).
+  - **Score** sums weighted signals: active-transfer load, TPS headroom, player count, locality bonus (already-subscribed servers ship less chunk data on takeover).
+- Each weight is JVM-property tunable: `multipaper.hotspot.score.load|tps|players|locality`. Logs include the full breakdown so you can see which signal carried the decision.
+- An explicit `multipaper.hotspot.crowdServers=...` list still works as an override — the scheduler runs over the explicit pool instead of every connection.
+
+**Severity:** **none** (still dry-run gated)
+
+**Why this matches a Kubernetes setup:**
+- No hardcoded role differentiation: any pod can absorb a hotspot, picked by current load.
+- Filtering is "predicates" in k8s parlance, scoring is "priorities" — same shape, simpler implementation suited to ~tens of nodes instead of thousands.
+- TPS-floor filter prevents dumping load on a pod that's already in trouble — analogous to k8s avoiding NotReady nodes.
+
+**Status:** Scheduler in place. Still dry-run by default.
+
+---
+
 ## 2026-06-03 — hotspot offload step 4: reverse path (release when cooled)
 
 **Files modified:**
