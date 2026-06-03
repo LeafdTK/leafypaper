@@ -48,6 +48,16 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — bump Netty event-loop thread cap 3 → 8
+
+**Patch:** `0155-raise-default-netty-event-loop-thread-cap-from-3-to-.patch`
+
+**What changed:** Default thread count for the shared Netty event-loop pool (used by both master and peer-to-peer connections) was capped at `min(processors, 3)`. With 20 peers + 1 master connection per server, that's 21 channels sharing 3 threads — each thread handles 7+ channels, contention is high. Bumped to `min(processors, 8)` for better fan-out under cluster load.
+
+**Severity:** **none** — purely a thread-pool sizing change. Behavior identical. Operator can still override via `-Dmultipaper.netty.threads=N`.
+
+---
+
 ## 2026-06-03 — more entity-sync hot-path inefficiencies
 
 **Patches:**
