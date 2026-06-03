@@ -139,6 +139,7 @@ public class ServerConnection extends MasterBoundMessageHandler {
         EntitiesSubscriptionManager.unsubscribeAll(this);
         ChunkSubscriptionManager.unsubscribeAndUnlockAll(this);
         puregero.multipaper.server.hotspot.RegionDensityTracker.forgetServer(this);
+        puregero.multipaper.server.hotspot.HotspotCoordinator.forgetServer(this);
 
         synchronized (connections) {
             connections.remove(this);

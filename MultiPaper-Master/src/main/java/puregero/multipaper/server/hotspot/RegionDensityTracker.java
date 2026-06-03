@@ -49,6 +49,12 @@ public final class RegionDensityTracker {
         cells.entrySet().removeIf(entry -> entry.getValue().contributions.isEmpty());
     }
 
+    /** Current combined population of a single region. Zero if untracked. */
+    public static int regionTotal(String world, int rx, int rz) {
+        Cell cell = cells.get(new RegionKey(world, rx, rz));
+        return cell == null ? 0 : cell.total.get();
+    }
+
     /** Snapshot all regions whose combined population is at or above {@code threshold}. */
     public static List<HotRegion> hottestAbove(int threshold) {
         List<HotRegion> hot = new ArrayList<>();

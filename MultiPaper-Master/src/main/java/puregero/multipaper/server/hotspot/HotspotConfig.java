@@ -23,6 +23,19 @@ public final class HotspotConfig {
     public static final int COOLDOWN_SECONDS = Integer.getInteger(
             "multipaper.hotspot.cooldownSeconds", 60);
 
+    /**
+     * Hysteresis lower bound: a transferred region is released back to its
+     * previous owners when its combined population falls at or below this for
+     * {@link #RELEASE_HOLD_SECONDS} consecutive seconds. Sit comfortably
+     * below {@link #THRESHOLD_PLAYERS} so we don't flap.
+     */
+    public static final int RELEASE_THRESHOLD_PLAYERS = Integer.getInteger(
+            "multipaper.hotspot.releaseThresholdPlayers", Math.max(1, THRESHOLD_PLAYERS / 2));
+
+    /** How long the release threshold must be met before the region is actually released. */
+    public static final int RELEASE_HOLD_SECONDS = Integer.getInteger(
+            "multipaper.hotspot.releaseHoldSeconds", 30);
+
     /** Logging-only mode: scoring runs but no ownership transfer is issued. Default on while transfer protocol matures. */
     public static final boolean DRY_RUN = Boolean.parseBoolean(
             System.getProperty("multipaper.hotspot.dryRun", "true"));

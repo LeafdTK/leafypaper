@@ -48,6 +48,40 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — hotspot offload step 4: reverse path (release when cooled)
+
+**Files modified:**
+- `MultiPaper-Master/.../hotspot/HotspotConfig.java` — added `RELEASE_THRESHOLD_PLAYERS` and `RELEASE_HOLD_SECONDS` knobs
+- `MultiPaper-Master/.../hotspot/RegionDensityTracker.java` — exposed `regionTotal(world, rx, rz)`
+- `MultiPaper-Master/.../hotspot/HotspotCoordinator.java` — added active-transfer table, `sweepReleases()`, `releaseRegion()`, `forgetServer()`
+- `MultiPaper-Master/.../server/ServerConnection.java` — calls `HotspotCoordinator.forgetServer` on disconnect
+
+**What this completes:**
+- The coordinator now tracks every region it has handed to a crowd server.
+- Each tick, before scoring new candidates, it sweeps active transfers. When a region's combined density falls at or below `RELEASE_THRESHOLD_PLAYERS` (default: half the offload threshold) and stays there for `RELEASE_HOLD_SECONDS` (default 30s), the coordinator force-unlocks every chunk in the region from the crowd server.
+- `ChunkSubscriptionManager.unlock` already promotes the next-in-line server (the previous owner before the transfer) and broadcasts `SetChunkOwnerMessage` to every subscriber. The crowd server, still subscribed, receives the broadcast and stops ticking those chunks.
+- If the crowd server disconnects mid-transfer, `forgetServer` drops the entry. The chunk locks themselves are released by the existing `unsubscribeAndUnlockAll` on `channelInactive`, so no separate cleanup is needed.
+
+**Severity:** **none** (gated by dry-run; release sweep is also no-op when dry-run is on because nothing is in the active table)
+
+**What to test:**
+- Trigger a transfer (200 players → spawn → crowd server takes over)
+- Players disperse → density drops below `releaseThresholdPlayers`
+- Wait `releaseHoldSeconds` → master logs "released region ..." → previous owner resumes ticking
+- Verify no entity duplication, no chunks owned by no-one stuck after release
+- Crowd server disconnect mid-load: chunks should fall back to previous owners cleanly
+
+**Whole hotspot offload feature is now functionally complete in dry-run mode** (patches 0157-0159 + this master-only change). To operationalize on a fleet:
+1. Pick a small staging server pool. Add their names to `-Dmultipaper.hotspot.crowdServers=...`.
+2. Set a low threshold (e.g. 20) for testing: `-Dmultipaper.hotspot.thresholdPlayers=20`.
+3. Flip `-Dmultipaper.hotspot.dryRun=false`.
+4. Watch the master logs and verify transfer + release work end-to-end.
+5. Tune thresholds to production targets.
+
+**Status:** Reverse path implemented. Feature complete in dry-run.
+
+---
+
 ## 2026-06-03 — hotspot offload step 3: handover state machine (still dry-run gated)
 
 **Files added / modified:**

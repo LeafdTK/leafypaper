@@ -1,10 +1,12 @@
 package puregero.multipaper.server.hotspot;
 
 import puregero.multipaper.mastermessagingprotocol.messages.serverbound.TransferRegionOwnershipMessage;
+import puregero.multipaper.server.ChunkSubscriptionManager;
 import puregero.multipaper.server.ServerConnection;
 import puregero.multipaper.server.hotspot.RegionDensityTracker.HotRegion;
 
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
@@ -34,6 +36,17 @@ public final class HotspotCoordinator {
     /** When a region was last transferred — used to enforce {@link HotspotConfig#COOLDOWN_SECONDS}. */
     private static final Map<RegionDensityTracker.RegionKey, Long> lastTransferAt = new HashMap<>();
 
+    /**
+     * Regions currently held by a crowd server. Used by the release sweep:
+     * when density falls below {@link HotspotConfig#RELEASE_THRESHOLD_PLAYERS}
+     * for {@link HotspotConfig#RELEASE_HOLD_SECONDS} consecutive seconds we
+     * force-unlock the chunks so the next-in-line server (the previous owner)
+     * is promoted back to chunk owner.
+     */
+    private static final Map<RegionDensityTracker.RegionKey, ActiveTransfer> active = new HashMap<>();
+
+    private record ActiveTransfer(ServerConnection crowdServer, long firstLowAt) {}
+
     private static volatile ScheduledExecutorService scheduler;
 
     /** Wire the loop up. Called once from the master bootstrap. */
@@ -61,6 +74,10 @@ public final class HotspotCoordinator {
     }
 
     private static void tickInner() {
+        // Release sweep runs first so a cooled region frees its crowd server
+        // before we look at the heat map for new candidates this cycle.
+        sweepReleases();
+
         List<HotRegion> hot = RegionDensityTracker.hottestAbove(HotspotConfig.THRESHOLD_PLAYERS);
         if (hot.isEmpty()) return;
 
@@ -88,10 +105,64 @@ public final class HotspotCoordinator {
                         HotspotConfig.REGION_SIZE_CHUNKS));
                 System.out.println("[hotspot] transferred region " + key +
                         " (total=" + region.total() + ") to crowd server " + crowd.getBungeeCordName());
+                active.put(key, new ActiveTransfer(crowd, 0L));
             }
             lastTransferAt.put(key, now);
             return; // one transfer per tick — observe its effect before issuing more
         }
+    }
+
+    private static void sweepReleases() {
+        long now = System.currentTimeMillis();
+        long releaseHoldMs = HotspotConfig.RELEASE_HOLD_SECONDS * 1000L;
+
+        Iterator<Map.Entry<RegionDensityTracker.RegionKey, ActiveTransfer>> it = active.entrySet().iterator();
+        while (it.hasNext()) {
+            Map.Entry<RegionDensityTracker.RegionKey, ActiveTransfer> entry = it.next();
+            RegionDensityTracker.RegionKey key = entry.getKey();
+            ActiveTransfer at = entry.getValue();
+            int total = RegionDensityTracker.regionTotal(key.world(), key.rx(), key.rz());
+
+            if (total > HotspotConfig.RELEASE_THRESHOLD_PLAYERS) {
+                if (at.firstLowAt() != 0L) {
+                    entry.setValue(new ActiveTransfer(at.crowdServer(), 0L));
+                }
+                continue;
+            }
+
+            long firstLow = at.firstLowAt();
+            if (firstLow == 0L) {
+                entry.setValue(new ActiveTransfer(at.crowdServer(), now));
+                continue;
+            }
+            if (now - firstLow < releaseHoldMs) {
+                continue;
+            }
+
+            // Held below release threshold long enough — give the region back.
+            releaseRegion(key, at.crowdServer());
+            it.remove();
+        }
+    }
+
+    /**
+     * Force-unlock every chunk in {@code key} from {@code crowdServer}.
+     * {@link ChunkSubscriptionManager#unlock} promotes the next-in-line server
+     * (typically the previous owner from before the transfer) and broadcasts
+     * {@code SetChunkOwnerMessage} to subscribers. The crowd server itself
+     * receives the broadcast and stops ticking. Subscription stays in place —
+     * the crowd server is still mirroring; it just isn't authoritative.
+     */
+    private static void releaseRegion(RegionDensityTracker.RegionKey key, ServerConnection crowdServer) {
+        int regionSize = HotspotConfig.REGION_SIZE_CHUNKS;
+        int cxStart = key.rx() * regionSize;
+        int czStart = key.rz() * regionSize;
+        for (int dx = 0; dx < regionSize; dx++) {
+            for (int dz = 0; dz < regionSize; dz++) {
+                ChunkSubscriptionManager.unlock(crowdServer, key.world(), cxStart + dx, czStart + dz);
+            }
+        }
+        System.out.println("[hotspot] released region " + key + " from crowd server " + crowdServer.getBungeeCordName());
     }
 
     private static ServerConnection pickCrowdServer() {
@@ -102,6 +173,11 @@ public final class HotspotCoordinator {
             }
         }
         return null;
+    }
+
+    /** Drop any active-transfer entries owned by a disconnecting server. */
+    public static void forgetServer(ServerConnection server) {
+        active.entrySet().removeIf(e -> e.getValue().crowdServer() == server);
     }
 
     private static String[] parsePool(String raw) {
