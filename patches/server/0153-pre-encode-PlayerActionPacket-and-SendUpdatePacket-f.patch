@@ -1,0 +1,120 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 12:23:41 -0400
+Subject: [PATCH] pre-encode PlayerActionPacket and SendUpdatePacket for
+ broadcast fan-out
+
+
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/PlayerActionPacket.java b/src/main/java/puregero/multipaper/externalserverprotocol/PlayerActionPacket.java
+index fd2a81936f4fb19534d165ea96f88cc6c2065b4f..455688ffa075a4011850fd1cc56700c7fbd6d9bc 100644
+--- a/src/main/java/puregero/multipaper/externalserverprotocol/PlayerActionPacket.java
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/PlayerActionPacket.java
+@@ -22,10 +22,28 @@ public class PlayerActionPacket extends ExternalServerPacket {
+ 
+     private final UUID uuid;
+     private final Packet<ServerGamePacketListener> action;
++    private final byte[] preEncodedAction;
+ 
+     public PlayerActionPacket(ServerPlayer player, Packet<ServerGamePacketListener> action) {
+         this.uuid = player.getUUID();
+         this.action = action;
++        this.preEncodedAction = serializeAction(action);
++    }
++
++    private static byte[] serializeAction(Packet<ServerGamePacketListener> action) {
++        ConnectionProtocol protocol = ConnectionProtocol.getProtocolForPacket(action);
++        Integer id = protocol.getPacketId(PacketFlow.SERVERBOUND, action);
++        ByteBuf buf = Unpooled.buffer();
++        try {
++            FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(buf);
++            friendlyByteBuf.writeVarInt(id);
++            action.write(friendlyByteBuf);
++            byte[] bytes = new byte[buf.readableBytes()];
++            buf.readBytes(bytes);
++            return bytes;
++        } finally {
++            buf.release();
++        }
+     }
+ 
+     public PlayerActionPacket(FriendlyByteBuf in) {
+@@ -35,19 +53,13 @@ public class PlayerActionPacket extends ExternalServerPacket {
+         FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(buf);
+         int packetId = friendlyByteBuf.readVarInt();
+         action = (Packet<ServerGamePacketListener>) ConnectionProtocol.PLAY.createPacket(PacketFlow.SERVERBOUND, packetId, friendlyByteBuf);
++        this.preEncodedAction = null;
+     }
+ 
+     @Override
+     public void write(FriendlyByteBuf out) {
+         out.writeUUID(uuid);
+-
+-        ConnectionProtocol protocol = ConnectionProtocol.getProtocolForPacket(action);
+-        Integer id = protocol.getPacketId(PacketFlow.SERVERBOUND, action);
+-        ByteBuf buf = Unpooled.buffer();
+-        FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(buf);
+-        friendlyByteBuf.writeVarInt(id);
+-        action.write(friendlyByteBuf);
+-        out.writeByteArray(buf.array());
++        out.writeByteArray(preEncodedAction != null ? preEncodedAction : serializeAction(action));
+     }
+ 
+     @Override
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/SendUpdatePacket.java b/src/main/java/puregero/multipaper/externalserverprotocol/SendUpdatePacket.java
+index ede67414c73e03f90360e7d7e3a20ce2c63fd318..d3c45b3fc0a0bd00af7015389d9db6ea03e939e0 100644
+--- a/src/main/java/puregero/multipaper/externalserverprotocol/SendUpdatePacket.java
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/SendUpdatePacket.java
+@@ -23,6 +23,7 @@ public class SendUpdatePacket extends ExternalServerPacket {
+ 
+     private final UUID world;
+     private final Packet<?> packet;
++    private final byte[] preEncodedInner;
+ 
+     public SendUpdatePacket(ServerLevel level, Packet<?> packet) {
+         this(level.uuid, packet);
+@@ -31,6 +32,23 @@ public class SendUpdatePacket extends ExternalServerPacket {
+     public SendUpdatePacket(UUID world, Packet<?> packet) {
+         this.world = world;
+         this.packet = packet;
++        this.preEncodedInner = serializeInner(packet);
++    }
++
++    private static byte[] serializeInner(Packet<?> packet) {
++        ConnectionProtocol protocol = ConnectionProtocol.getProtocolForPacket(packet);
++        Integer id = protocol.getPacketId(PacketFlow.CLIENTBOUND, packet);
++        ByteBuf buf = Unpooled.buffer();
++        try {
++            FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(buf);
++            friendlyByteBuf.writeVarInt(id);
++            packet.write(friendlyByteBuf);
++            byte[] bytes = new byte[buf.readableBytes()];
++            buf.readBytes(bytes);
++            return bytes;
++        } finally {
++            buf.release();
++        }
+     }
+ 
+     public SendUpdatePacket(FriendlyByteBuf in) {
+@@ -42,19 +60,13 @@ public class SendUpdatePacket extends ExternalServerPacket {
+         friendlyByteBuf.maxNbtSize = Long.MAX_VALUE;
+         int packetId = friendlyByteBuf.readVarInt();
+         packet = ConnectionProtocol.PLAY.createPacket(PacketFlow.CLIENTBOUND, packetId, friendlyByteBuf);
++        this.preEncodedInner = null;
+     }
+ 
+     @Override
+     public void write(FriendlyByteBuf out) {
+         out.writeUUID(world);
+-
+-        ConnectionProtocol protocol = ConnectionProtocol.getProtocolForPacket(packet);
+-        Integer id = protocol.getPacketId(PacketFlow.CLIENTBOUND, packet);
+-        ByteBuf buf = Unpooled.buffer();
+-        FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(buf);
+-        friendlyByteBuf.writeVarInt(id);
+-        packet.write(friendlyByteBuf);
+-        out.writeByteArray(buf.array());
++        out.writeByteArray(preEncodedInner != null ? preEncodedInner : serializeInner(packet));
+     }
+ 
+     @Override
