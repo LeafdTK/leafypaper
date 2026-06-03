@@ -1,0 +1,22 @@
+# Runtime files written by the game servers on first boot.
+#
+# Strategy: ignore everything inside server*/ by default, then explicitly
+# un-ignore the small seed files we *do* want to track (eula.txt,
+# server.properties, spigot.yml with bungeecord=true, and the paper-global
+# proxies override). The eula.txt + server.properties give Paper enough to
+# boot without prompting; spigot.yml + paper-global.yml fix the BungeeCord
+# IP-forwarding handshake.
+
+server*/*
+!server*/eula.txt
+!server*/server.properties
+!server*/spigot.yml
+!server*/config/
+server*/config/*
+!server*/config/paper-global.yml
+
+# Master working dir is tiny — nothing to keep yet, but anything Paper
+# would write here (logs, world data) is generated. Track only the
+# placeholder config.
+master/*
+!master/multipaper-server.yml
