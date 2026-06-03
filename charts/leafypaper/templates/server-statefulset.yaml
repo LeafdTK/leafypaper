@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "leafypaper.server.fullname" . }}
+  namespace: {{ include "leafypaper.namespace" . }}
+  labels:
+    {{- include "leafypaper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  serviceName: server
+  replicas: {{ .Values.server.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "leafypaper.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        {{- with .Values.podLabels }}{{- toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        {{- with .Values.podAnnotations }}{{- toYaml . | nindent 8 }}{{- end }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: server
+          image: "{{ .Values.image.server.repository }}:{{ .Values.image.server.tag }}"
+          imagePullPolicy: {{ .Values.image.server.pullPolicy }}
+          ports:
+            - name: minecraft
+              containerPort: 25565
+              protocol: TCP
+            - name: rcon
+              containerPort: 25575
+              protocol: TCP
+          env:
+            # POD_NAME becomes the server's identity in the MultiPaper cluster.
+            # Stable across restarts thanks to StatefulSet ordinal naming.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SERVER_NAME
+              value: "$(POD_NAME)"
+            - name: MASTER_ADDRESS
+              value: "master.{{ include "leafypaper.namespace" . }}.svc.cluster.local:{{ .Values.master.service.masterPort }}"
+            - name: JVM_OPTS
+              value: {{ .Values.server.jvm.opts | quote }}
+            - name: MULTIPAPER_OPTS
+              value: {{ include "leafypaper.server.hotspotFlags" . | quote }}
+            {{- range $k, $v := .Values.server.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.server.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.server.persistence.enabled }}
+            - name: data
+              mountPath: /work/world
+              subPath: world
+            - name: data
+              mountPath: /work/world_nether
+              subPath: world_nether
+            - name: data
+              mountPath: /work/world_the_end
+              subPath: world_the_end
+            - name: data
+              mountPath: /work/logs
+              subPath: logs
+            - name: data
+              mountPath: /work/cache
+              subPath: cache
+            - name: data
+              mountPath: /work/plugins
+              subPath: plugins
+            {{- end }}
+          readinessProbe:
+            tcpSocket:
+              port: minecraft
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: minecraft
+            initialDelaySeconds: 60
+            periodSeconds: 20
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.server.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: {{ .Values.server.persistence.accessModes }}
+        {{- with .Values.server.persistence.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.server.persistence.size }}
+  {{- end }}

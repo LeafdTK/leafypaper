@@ -1,0 +1,30 @@
+# Headless service: each StatefulSet pod gets stable DNS at
+#   <pod>.server.<ns>.svc.cluster.local
+# Game servers don't expose Minecraft to the world directly — the master
+# proxy routes clients to them via the cluster-internal pod IPs.
+apiVersion: v1
+kind: Service
+metadata:
+  name: server
+  namespace: {{ include "leafypaper.namespace" . }}
+  labels:
+    {{- include "leafypaper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  type: {{ .Values.server.service.type }}
+  {{- with .Values.server.service.clusterIP }}
+  clusterIP: {{ . }}
+  {{- end }}
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: server
+  ports:
+    - name: minecraft
+      port: 25565
+      targetPort: minecraft
+      protocol: TCP
+    - name: rcon
+      port: 25575
+      targetPort: rcon
+      protocol: TCP

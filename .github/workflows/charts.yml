@@ -1,0 +1,58 @@
+name: Publish Helm chart
+
+# Packages charts/leafypaper into a tarball and pushes it as an OCI
+# artifact to ghcr.io. Install on any cluster with:
+#
+#   helm install leafy oci://ghcr.io/leafdtk/charts/leafypaper --version <v>
+#
+# OCI distribution doesn't need a separate `helm repo add` — Helm 3.8+
+# pulls directly from the registry the same way Docker pulls images.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'charts/**'
+      - '.github/workflows/charts.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: charts-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  REGISTRY: ghcr.io
+  CHART_OCI: oci://ghcr.io/leafdtk/charts
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.14.0
+
+      - name: Helm lint
+        run: helm lint charts/leafypaper
+
+      - name: Helm template (dry-render smoke test)
+        run: helm template leafy charts/leafypaper >/dev/null
+
+      - name: Helm package
+        id: pkg
+        run: |
+          mkdir -p _dist
+          helm package charts/leafypaper -d _dist
+          echo "tarball=$(ls _dist/leafypaper-*.tgz)" >>"$GITHUB_OUTPUT"
+
+      - name: Login to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login -u "${{ github.actor }}" --password-stdin ${{ env.REGISTRY }}
+
+      - name: Helm push
+        run: helm push "${{ steps.pkg.outputs.tarball }}" "${{ env.CHART_OCI }}"

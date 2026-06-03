@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "leafypaper.master.fullname" . }}
+  namespace: {{ include "leafypaper.namespace" . }}
+  labels:
+    {{- include "leafypaper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+spec:
+  # Master is single-instance. A Recreate strategy avoids two masters
+  # running at the same time during rollouts (which would create a brief
+  # split-brain in the chunk-ownership table).
+  strategy:
+    type: Recreate
+  replicas: {{ .Values.master.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: master
+  template:
+    metadata:
+      labels:
+        {{- include "leafypaper.labels" . | nindent 8 }}
+        app.kubernetes.io/component: master
+        {{- with .Values.podLabels }}{{- toYaml . | nindent 8 }}{{- end }}
+      annotations:
+        {{- with .Values.podAnnotations }}{{- toYaml . | nindent 8 }}{{- end }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: master
+          image: "{{ .Values.image.master.repository }}:{{ .Values.image.master.tag }}"
+          imagePullPolicy: {{ .Values.image.master.pullPolicy }}
+          ports:
+            - name: cluster
+              containerPort: {{ .Values.master.service.masterPort }}
+              protocol: TCP
+            {{- if .Values.master.proxy.enabled }}
+            - name: proxy
+              containerPort: {{ .Values.master.proxy.port }}
+              protocol: TCP
+            {{- end }}
+          env:
+            - name: MASTER_BIND
+              value: "0.0.0.0:{{ .Values.master.service.masterPort }}"
+            - name: PROXY_PORT
+              value: "{{ .Values.master.proxy.port }}"
+            - name: JVM_OPTS
+              value: {{ .Values.master.jvm.opts | quote }}
+            - name: MULTIPAPER_OPTS
+              value: {{ include "leafypaper.master.hotspotFlags" . | quote }}
+            {{- range $k, $v := .Values.master.env }}
+            - name: {{ $k }}
+              value: {{ $v | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.master.resources | nindent 12 }}
+          livenessProbe:
+            tcpSocket:
+              port: cluster
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            tcpSocket:
+              port: cluster
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

@@ -1,0 +1,46 @@
+# Cluster-internal service. Game-server pods reach the master via this
+# service name; we publish stable DNS as `master.<ns>.svc.cluster.local`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: master
+  namespace: {{ include "leafypaper.namespace" . }}
+  labels:
+    {{- include "leafypaper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: master
+spec:
+  type: {{ .Values.master.service.type }}
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: master
+  ports:
+    - name: cluster
+      port: {{ .Values.master.service.masterPort }}
+      targetPort: cluster
+      protocol: TCP
+
+{{- if .Values.master.proxy.enabled }}
+---
+# External-facing service for the master's built-in proxy. This is what
+# Minecraft clients connect to.
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: {{ include "leafypaper.namespace" . }}
+  labels:
+    {{- include "leafypaper.labels" . | nindent 4 }}
+    app.kubernetes.io/component: proxy
+spec:
+  type: {{ .Values.master.proxy.type }}
+  selector:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: master
+  ports:
+    - name: minecraft
+      port: {{ .Values.master.proxy.port }}
+      targetPort: proxy
+      protocol: TCP
+{{- end }}

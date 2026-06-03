@@ -1,0 +1,10 @@
+master-connection:
+  # `my-name` and `master-address` are overridden at runtime by the Helm
+  # chart via -Dmultipaper.master-connection.* JVM args. This file just
+  # carries the rest of the schema with defaults.
+  advertise-to-built-in-proxy: true
+
+peer-connection:
+  compression-threshold: 256
+  consolidation-delay: 0
+  separate-bulk-channel: false

@@ -1,0 +1,18 @@
+apiVersion: v2
+name: leafypaper
+description: A distributed Minecraft server cluster (master + game servers + hotspot scheduler)
+type: application
+version: 0.1.0
+appVersion: "2.12.3"
+home: https://github.com/LeafdTK/leafypaper
+sources:
+  - https://github.com/LeafdTK/leafypaper
+maintainers:
+  - name: LeafdTK
+    email: hi@leafd.dev
+keywords:
+  - minecraft
+  - paper
+  - purpur
+  - multipaper
+  - distributed

@@ -1,0 +1,121 @@
+# Default values for leafypaper.
+# Override these with -f my-values.yaml or --set on `helm install`.
+
+# Namespace the chart creates and installs into. The chart will install a
+# Namespace object itself so you don't have to `kubectl create ns leafypaper`
+# beforehand; disable that by setting namespace.create=false.
+namespace:
+  create: true
+  name: leafypaper
+
+# ── images ──────────────────────────────────────────────────────────────
+# These come from .github/workflows/images.yml which pushes on every commit
+# to main. Tag `latest` + Always-pull means a fresh image is picked up on
+# any pod restart.
+image:
+  master:
+    repository: ghcr.io/leafdtk/leafypaper-master
+    tag: latest
+    pullPolicy: Always
+  server:
+    repository: ghcr.io/leafdtk/leafypaper-server
+    tag: latest
+    pullPolicy: Always
+  pullSecrets: []
+
+# ── master ──────────────────────────────────────────────────────────────
+master:
+  # Master is single-instance by design. State (chunk-ownership table) is
+  # in-memory; running multiple masters would create split-brain.
+  replicas: 1
+
+  service:
+    type: ClusterIP
+    masterPort: 35353
+
+  # The built-in proxy is what Minecraft clients connect to. Exposed via
+  # LoadBalancer by default so a cloud LB gives you an external TCP entry.
+  # Swap to NodePort or use a separate Ingress controller for TCP if your
+  # cluster doesn't have a cloud LB.
+  proxy:
+    enabled: true
+    type: LoadBalancer
+    port: 25577
+
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2
+      memory: 4Gi
+
+  env: {}
+  # Hotspot tuning via JVM system properties. Empty string means
+  # "use the hard-coded default in the master jar". Set to a value to
+  # override.
+  hotspot:
+    thresholdPlayers: ""           # default: 80
+    releaseThresholdPlayers: ""    # default: thresholdPlayers / 2
+    cooldownSeconds: ""            # default: 60
+    releaseHoldSeconds: ""         # default: 30
+    regionSizeChunks: ""           # default: 16
+    dryRun: "false"                # ship live by default; flip to "true" to log-only
+    # Explicit crowd-server pool (comma-separated). Leave blank for the
+    # homogeneous scheduler that picks any pod by current load.
+    crowdServers: ""
+
+  jvm:
+    opts: "-Xms1G -Xmx2G"
+
+# ── game servers ────────────────────────────────────────────────────────
+server:
+  # StatefulSet replica count — each one becomes a "server" inside the
+  # MultiPaper cluster. Scale up = more cluster capacity.
+  replicas: 2
+
+  service:
+    # Headless service for stable pod DNS. Game servers don't expose to
+    # the world directly — Minecraft clients connect via the master proxy.
+    type: ClusterIP
+    clusterIP: None
+
+  persistence:
+    enabled: true
+    storageClass: ""   # "" = cluster default
+    size: 10Gi
+    accessModes: [ReadWriteOnce]
+
+  resources:
+    requests:
+      cpu: 1
+      memory: 2Gi
+    limits:
+      cpu: 4
+      memory: 6Gi
+
+  jvm:
+    opts: "-Xms2G -Xmx4G"
+
+  env: {}
+
+  # Settings the chart can drop into the multipaper.yml — leave blank to
+  # use the image's bundled defaults.
+  multipaper:
+    peerConnection:
+      compressionThreshold: ""    # default: 256
+      consolidationDelay: ""      # default: 0
+      separateBulkChannel: ""     # default: false
+
+  # Additional JVM -D flags for hotspot reporter / hot-path tuning on
+  # game servers. Leave blank to use defaults.
+  hotspotReporter:
+    regionSizeChunks: ""          # default: 16 (must match master)
+    reportIntervalTicks: ""       # default: 40
+
+# ── pod scheduling knobs ────────────────────────────────────────────────
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+podLabels: {}

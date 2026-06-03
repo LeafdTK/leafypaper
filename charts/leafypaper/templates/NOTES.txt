@@ -1,0 +1,34 @@
+leafypaper {{ .Chart.AppVersion }} installed into namespace `{{ include "leafypaper.namespace" . }}`.
+
+What you got:
+  - 1× master (deployment): cluster on :{{ .Values.master.service.masterPort }}, proxy on :{{ .Values.master.proxy.port }}
+  - {{ .Values.server.replicas }}× game servers (statefulset): each with a {{ .Values.server.persistence.size }} PVC
+
+Useful checks:
+
+  kubectl -n {{ include "leafypaper.namespace" . }} get pods,svc,pvc
+  kubectl -n {{ include "leafypaper.namespace" . }} logs deploy/{{ include "leafypaper.master.fullname" . }} -f
+
+{{- if eq .Values.master.proxy.type "LoadBalancer" }}
+
+External entry point for Minecraft clients (may take a minute to provision):
+
+  kubectl -n {{ include "leafypaper.namespace" . }} get svc proxy -w
+{{- else if eq .Values.master.proxy.type "NodePort" }}
+
+The proxy is exposed as NodePort. Pick any node IP plus:
+
+  kubectl -n {{ include "leafypaper.namespace" . }} get svc proxy
+{{- end }}
+
+To send a console command to every game server (requires kubectl exec):
+
+  for pod in $(kubectl -n {{ include "leafypaper.namespace" . }} get pods -l app.kubernetes.io/component=server -o name); do
+    kubectl -n {{ include "leafypaper.namespace" . }} exec "$pod" -- \
+      sh -c "echo time set day | rcon-cli --host=127.0.0.1 --port=25575 --password=leafd"
+  done
+
+Tune the hotspot scheduler at runtime by editing the master deployment:
+
+  kubectl -n {{ include "leafypaper.namespace" . }} edit deploy/{{ include "leafypaper.master.fullname" . }}
+  # add to MULTIPAPER_OPTS: -Dmultipaper.hotspot.thresholdPlayers=60
