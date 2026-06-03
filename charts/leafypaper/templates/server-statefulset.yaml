@@ -40,20 +40,49 @@ spec:
               containerPort: 25575
               protocol: TCP
           env:
-            # POD_NAME becomes the server's identity in the MultiPaper cluster.
-            # Stable across restarts thanks to StatefulSet ordinal naming.
+            # POD_NAME → MultiPaper "my-name". StatefulSet ordinals give us
+            # stable names across restarts so the master can keep its
+            # per-server state consistent.
             - name: POD_NAME
-              valueFrom:
-                fieldRef:
-                  fieldPath: metadata.name
-            - name: SERVER_NAME
-              value: "$(POD_NAME)"
-            - name: MASTER_ADDRESS
-              value: "master.{{ include "leafypaper.namespace" . }}.svc.cluster.local:{{ .Values.master.service.masterPort }}"
-            - name: JVM_OPTS
-              value: {{ .Values.server.jvm.opts | quote }}
-            - name: MULTIPAPER_OPTS
-              value: {{ include "leafypaper.server.hotspotFlags" . | quote }}
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            # itzg memory + RCON wiring.
+            - name: MEMORY
+              value: {{ .Values.server.memory | quote }}
+            - name: RCON_PASSWORD
+              value: {{ .Values.server.rcon.password | quote }}
+            # Pass leafypaper's -D flags through itzg's JVM_DD_OPTS. itzg
+            # converts each `k=v` token into a `-Dk=v` JVM argument when
+            # constructing the java command line. We always include the
+            # multipaper.master-connection bits; hotspot reporter and
+            # peerConnection knobs are appended only when set.
+            - name: JVM_DD_OPTS
+              value: {{ include "leafypaper.server.dd" . | quote }}
+            # Modpack install hooks. Any empty env var is a no-op in itzg.
+            {{- with .Values.server.modpack.packwiz.url }}
+            - name: PACKWIZ_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.server.modpack.modrinth.project }}
+            - name: MODRINTH_PROJECT
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.server.modpack.modrinth.version }}
+            - name: MODRINTH_VERSION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.server.modpack.plugins }}
+            - name: PLUGINS
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.server.modpack.spigetResources }}
+            - name: SPIGET_RESOURCES
+              value: {{ . | quote }}
+            {{- end }}
+            {{- if .Values.server.modpack.overrideConfigs }}
+            - name: OVERRIDE_SERVER_PROPERTIES
+              value: "TRUE"
+            {{- end }}
+            # Operator-provided pass-through (MOTD, MAX_PLAYERS, VIEW_DISTANCE, etc.).
             {{- range $k, $v := .Values.server.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
@@ -62,34 +91,20 @@ spec:
             {{- toYaml .Values.server.resources | nindent 12 }}
           volumeMounts:
             {{- if .Values.server.persistence.enabled }}
+            # itzg's PERSISTENT data root is /data — worlds, plugins,
+            # configs, ops.json, cache, logs all live there.
             - name: data
-              mountPath: /work/world
-              subPath: world
-            - name: data
-              mountPath: /work/world_nether
-              subPath: world_nether
-            - name: data
-              mountPath: /work/world_the_end
-              subPath: world_the_end
-            - name: data
-              mountPath: /work/logs
-              subPath: logs
-            - name: data
-              mountPath: /work/cache
-              subPath: cache
-            - name: data
-              mountPath: /work/plugins
-              subPath: plugins
+              mountPath: /data
             {{- end }}
           readinessProbe:
             tcpSocket:
               port: minecraft
-            initialDelaySeconds: 30
+            initialDelaySeconds: 60
             periodSeconds: 10
           livenessProbe:
             tcpSocket:
               port: minecraft
-            initialDelaySeconds: 60
+            initialDelaySeconds: 120
             periodSeconds: 20
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -41,3 +41,22 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" }}
 {{- with $h.regionSizeChunks }}-Dmultipaper.hotspot.regionSizeChunks={{ . }} {{ end -}}
 {{- with $h.reportIntervalTicks }}-Dmultipaper.hotspot.reportIntervalTicks={{ . }} {{ end -}}
 {{- end -}}
+
+{{/*
+Build the comma-separated `key=value,key=value` string itzg expects in
+JVM_DD_OPTS. Each pair becomes a `-Dkey=value` on the java command line.
+We always include the master-connection bits so MultiPaper can phone home.
+Hotspot reporter and peerConnection knobs are appended only when set.
+*/}}
+{{- define "leafypaper.server.dd" -}}
+{{- $pairs := list -}}
+{{- $pairs = append $pairs "multipaper.master-connection.my-name=$(POD_NAME)" -}}
+{{- $pairs = append $pairs (printf "multipaper.master-connection.master-address=master.%s.svc.cluster.local:%d"
+    (include "leafypaper.namespace" .) (int .Values.master.service.masterPort)) -}}
+{{- with .Values.server.hotspotReporter.regionSizeChunks }}{{- $pairs = append $pairs (printf "multipaper.hotspot.regionSizeChunks=%s" (toString .)) }}{{- end -}}
+{{- with .Values.server.hotspotReporter.reportIntervalTicks }}{{- $pairs = append $pairs (printf "multipaper.hotspot.reportIntervalTicks=%s" (toString .)) }}{{- end -}}
+{{- with .Values.server.multipaper.peerConnection.compressionThreshold }}{{- $pairs = append $pairs (printf "multipaper.peerConnection.compressionThreshold=%s" (toString .)) }}{{- end -}}
+{{- with .Values.server.multipaper.peerConnection.consolidationDelay }}{{- $pairs = append $pairs (printf "multipaper.peerConnection.consolidationDelay=%s" (toString .)) }}{{- end -}}
+{{- with .Values.server.multipaper.peerConnection.separateBulkChannel }}{{- $pairs = append $pairs (printf "multipaper.peerConnection.separateBulkChannel=%s" (toString .)) }}{{- end -}}
+{{- join "," $pairs -}}
+{{- end -}}

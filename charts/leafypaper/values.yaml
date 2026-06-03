@@ -9,9 +9,11 @@ namespace:
   name: leafypaper
 
 # ── images ──────────────────────────────────────────────────────────────
-# These come from .github/workflows/images.yml which pushes on every commit
-# to main. Tag `latest` + Always-pull means a fresh image is picked up on
-# any pod restart.
+# leafypaper-master is our own Deployment image. leafypaper-server extends
+# itzg/minecraft-server with the patched paperclip jar baked in, so all of
+# itzg's modpack / configuration ergonomics (PACKWIZ_URL, MODRINTH_*, plugin
+# auto-install, etc.) work transparently. Tag `latest` + Always-pull means a
+# fresh image is picked up on any pod restart.
 image:
   master:
     repository: ghcr.io/leafdtk/leafypaper-master
@@ -52,8 +54,7 @@ master:
 
   env: {}
   # Hotspot tuning via JVM system properties. Empty string means
-  # "use the hard-coded default in the master jar". Set to a value to
-  # override.
+  # "use the hard-coded default in the master jar". Set to override.
   hotspot:
     thresholdPlayers: ""           # default: 80
     releaseThresholdPlayers: ""    # default: thresholdPlayers / 2
@@ -68,7 +69,7 @@ master:
   jvm:
     opts: "-Xms1G -Xmx2G"
 
-# ── game servers ────────────────────────────────────────────────────────
+# ── game servers (extending itzg/minecraft-server) ─────────────────────
 server:
   # StatefulSet replica count — each one becomes a "server" inside the
   # MultiPaper cluster. Scale up = more cluster capacity.
@@ -94,9 +95,36 @@ server:
       cpu: 4
       memory: 6Gi
 
-  jvm:
-    opts: "-Xms2G -Xmx4G"
+  # itzg uses MEMORY for both -Xms and -Xmx. Set this to roughly your
+  # resources.requests.memory minus ~512Mi (for non-heap JVM overhead).
+  memory: "2G"
 
+  # RCON for `kubectl exec`-style console commands. itzg wires this up
+  # for us when ENABLE_RCON=true (already set in the image).
+  rcon:
+    password: "leafd"
+
+  # Modpack / mod / plugin install via itzg env vars. ANY of these can be
+  # set; itzg uses them in priority order. Most useful for leafypaper:
+  #
+  #   packwiz.url      — http(s) URL to a packwiz manifest.toml
+  #   modrinth.project — modrinth project ID (slug works too)
+  #   modrinth.version — pin a specific version, otherwise latest
+  #   plugins          — comma-separated list of plugin jar URLs
+  #
+  # See https://docker-minecraft-server.readthedocs.io/ for the full menu.
+  modpack:
+    packwiz:
+      url: ""        # e.g. "https://example.com/pack/pack.toml"
+    modrinth:
+      project: ""
+      version: ""
+    plugins: ""      # comma-separated jar URLs
+    spigetResources: ""  # comma-separated SpigotMC resource IDs
+    overrideConfigs: false  # itzg OVERRIDE_SERVER_PROPERTIES, useful with packwiz
+
+  # Pass-through env vars for any itzg setting we haven't surfaced
+  # explicitly. Example: MOTD, ICON, MAX_PLAYERS, VIEW_DISTANCE, etc.
   env: {}
 
   # Settings the chart can drop into the multipaper.yml — leave blank to
@@ -107,8 +135,7 @@ server:
       consolidationDelay: ""      # default: 0
       separateBulkChannel: ""     # default: false
 
-  # Additional JVM -D flags for hotspot reporter / hot-path tuning on
-  # game servers. Leave blank to use defaults.
+  # JVM -D flags for hotspot reporter / hot-path tuning on game servers.
   hotspotReporter:
     regionSizeChunks: ""          # default: 16 (must match master)
     reportIntervalTicks: ""       # default: 40

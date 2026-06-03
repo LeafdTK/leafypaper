@@ -44,6 +44,38 @@ The chart creates the `leafypaper` namespace itself by default — no
 | `server` | Headless Service | Stable pod DNS for game servers |
 | `data-leafy-server-N` | PVC (default 10Gi) | Per-pod world + logs + plugins |
 
+## Modpacks (packwiz, modrinth, plugins)
+
+The server image extends [`itzg/minecraft-server`](https://docker-minecraft-server.readthedocs.io/),
+so every modpack / plugin install env var that itzg supports works
+transparently. The chart surfaces the most common ones:
+
+```bash
+# Auto-install a packwiz pack on every pod start
+helm install leafy oci://ghcr.io/leafdtk/charts/leafypaper --version 0.1.0 \
+  --set server.modpack.packwiz.url=https://example.com/pack/pack.toml \
+  --set server.modpack.overrideConfigs=true
+
+# Pull a modrinth project
+helm install leafy oci://ghcr.io/leafdtk/charts/leafypaper --version 0.1.0 \
+  --set server.modpack.modrinth.project=fabricapi \
+  --set server.modpack.modrinth.version=0.115.7+1.20.1
+
+# Drop arbitrary plugin jars in
+helm install leafy oci://ghcr.io/leafdtk/charts/leafypaper --version 0.1.0 \
+  --set server.modpack.plugins=https://github.com/.../EssentialsX.jar
+```
+
+For anything not surfaced, pass through `server.env` — it goes straight
+into the pod and itzg picks it up:
+
+```bash
+helm install ... \
+  --set-string server.env.MOTD="welcome to leafypaper" \
+  --set-string server.env.MAX_PLAYERS=200 \
+  --set-string server.env.VIEW_DISTANCE=12
+```
+
 ## Configurable values
 
 All settings live in [`values.yaml`](./values.yaml). Highlights:
