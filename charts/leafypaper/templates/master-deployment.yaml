@@ -31,10 +31,18 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.master.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: master
           image: "{{ .Values.image.master.repository }}:{{ .Values.image.master.tag }}"
           imagePullPolicy: {{ .Values.image.master.pullPolicy }}
+          {{- with .Values.master.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - name: cluster
               containerPort: {{ .Values.master.service.masterPort }}

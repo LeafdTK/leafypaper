@@ -52,6 +52,19 @@ master:
       cpu: 2
       memory: 4Gi
 
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
+
   env: {}
   # Hotspot tuning via JVM system properties. Empty string means
   # "use the hard-coded default in the master jar". Set to override.
@@ -81,9 +94,13 @@ server:
     type: ClusterIP
     clusterIP: None
 
+  # Per-pod PVC. Off by default: game-server state (worlds, player files,
+  # level.dat) is owned by the master and synced on demand, so the local
+  # /data dir is ephemeral cache. Flip enabled=true if you want plugin
+  # configs / mod jars to persist across pod restarts on a given replica.
   persistence:
-    enabled: true
-    storageClass: ""   # "" = cluster default
+    enabled: false
+    storageClass: ""
     size: 10Gi
     accessModes: [ReadWriteOnce]
 
@@ -94,6 +111,19 @@ server:
     limits:
       cpu: 4
       memory: 6Gi
+
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: false
+    capabilities:
+      drop: ["ALL"]
 
   # itzg uses MEMORY for both -Xms and -Xmx. Set this to roughly your
   # resources.requests.memory minus ~512Mi (for non-heap JVM overhead).
