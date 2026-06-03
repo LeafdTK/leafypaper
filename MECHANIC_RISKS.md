@@ -48,6 +48,34 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — hotspot offload step 2: transfer protocol (dry-run by default)
+
+**Files added:**
+- `MultiPaper-MasterMessagingProtocol/.../TransferRegionOwnershipMessage.java` (server-bound)
+- `MultiPaper-Master/.../hotspot/HotspotCoordinator.java`
+- Patch `0158-log-TransferRegionOwnership-stub-on-receive.patch`
+
+**What changed:**
+- New server-bound message `TransferRegionOwnershipMessage` (registered at the tail of `ServerBoundProtocol` — append-only). Default handler in `ServerBoundMessageHandler` is a no-op so any minimal handler that doesn't override still compiles.
+- New `HotspotCoordinator` runs on its own daemon scheduler (5s interval by default). Each tick: snapshot above-threshold regions, enforce per-region cooldown, pick a crowd server from the configured pool, emit the transfer message (or log it under dry-run).
+- Crowd-server pool is JVM-property configured: `-Dmultipaper.hotspot.crowdServers=name1,name2` (default empty → coordinator stays in log-only mode).
+- Server side overrides `handle(TransferRegionOwnershipMessage)` on `MultiPaperConnection` with a log line — no chunk-state changes yet. That's the handover state machine (task #29).
+
+**Severity:** **none** (dry-run gated)
+- Default `multipaper.hotspot.dryRun=true` means no transfer message is ever emitted.
+- Even with dry-run off, an empty crowd-server pool means the coordinator picks no target and logs the candidate.
+- Even if a transfer message IS sent, the server-side handler currently only logs receipt — chunk locks/subscriptions are unchanged until step 3 lands.
+
+**Still to build before this is operational (task #29):**
+1. On `TransferRegionOwnershipMessage` receipt: subscribe to every chunk in the region; send `LockChunkMessage` with the force flag for each so the master reassigns ownership and broadcasts to subscribers.
+2. Old owner: gracefully release ticking responsibility once the new `SetChunkOwnerMessage` arrives (mostly works today via existing chunk-ownership wiring — needs verification under load).
+3. Entity migration: passenger/leashed entity state needs to follow the chunk owner.
+4. Reverse path: when density drops, reassign back to original owners.
+
+**Status:** Protocol defined and wired end-to-end in dry-run mode. Logs show what *would* happen under load. Operationalization requires step 3.
+
+---
+
 ## 2026-06-03 — hotspot offload foundation (density reporting only)
 
 **Files added:**

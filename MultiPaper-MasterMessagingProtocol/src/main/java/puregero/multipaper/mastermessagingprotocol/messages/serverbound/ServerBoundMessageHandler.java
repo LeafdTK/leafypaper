@@ -38,4 +38,11 @@ public abstract class ServerBoundMessageHandler extends MessageHandler<ServerBou
     public abstract void handle(ChunkSubscribersSyncMessage message);
 
     public abstract void handle(EntitySubscribersSyncMessage message);
+
+    /**
+     * Hotspot offload: master telling this server it has been designated as
+     * the new owner of every chunk in a region. Default no-op so older /
+     * minimal handlers can ignore it.
+     */
+    public void handle(TransferRegionOwnershipMessage message) {}
 }

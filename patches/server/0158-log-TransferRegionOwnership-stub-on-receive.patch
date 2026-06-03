@@ -1,0 +1,28 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 14:15:42 -0400
+Subject: [PATCH] log TransferRegionOwnership stub on receive
+
+
+diff --git a/src/main/java/puregero/multipaper/MultiPaperConnection.java b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+index 40271914b83212fc7831012b10f7434d7e7eff59..1d7a42f2d37b548d2aa85683bc0ceeec674147e2 100644
+--- a/src/main/java/puregero/multipaper/MultiPaperConnection.java
++++ b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+@@ -478,6 +478,17 @@ public class MultiPaperConnection extends ServerBoundMessageHandler {
+         Bukkit.shutdown();
+     }
+ 
++    @Override
++    public void handle(puregero.multipaper.mastermessagingprotocol.messages.serverbound.TransferRegionOwnershipMessage message) {
++        // Hotspot offload: master is asking us to take ownership of every
++        // chunk in (world, rx, rz). The actual lock/subscribe loop is the
++        // job of the handover state machine (next step). For now log
++        // receipt so the dry-run path on the master can be observed
++        // end-to-end before any chunk state changes hands.
++        LOGGER.info("[hotspot] received TransferRegionOwnership for world={} rx={} rz={} regionSize={}",
++                message.world, message.rx, message.rz, message.regionSizeChunks);
++    }
++
+     @Override
+     public void handle(FileContentMessage message) {
+         File file = new File(message.path);

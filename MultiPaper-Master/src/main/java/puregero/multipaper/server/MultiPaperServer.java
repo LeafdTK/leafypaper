@@ -54,6 +54,8 @@ public class MultiPaperServer extends MessageBootstrap<MasterBoundMessage, Serve
 
         new MultiPaperServer(address, port);
 
+        puregero.multipaper.server.hotspot.HotspotCoordinator.start();
+
         if (new CommandLineInput().run()) {
             System.exit(0);
         }
