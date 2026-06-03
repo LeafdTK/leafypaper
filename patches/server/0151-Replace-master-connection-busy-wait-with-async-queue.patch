@@ -1,0 +1,94 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Leaf <leaf@multipaper.local>
+Date: Wed, 3 Jun 2026 11:32:05 -0400
+Subject: [PATCH] Replace master connection busy-wait with async queue
+
+
+diff --git a/src/main/java/puregero/multipaper/MultiPaperConnection.java b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+index 617098f160c0460509e5b109c25f4b5bb3faa0aa..eea63f4bbdabe8d22142d1e1b2908a4430f9c637 100644
+--- a/src/main/java/puregero/multipaper/MultiPaperConnection.java
++++ b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+@@ -44,10 +44,12 @@ import java.io.IOException;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Map;
++import java.util.Queue;
+ import java.util.Set;
+ import java.util.UUID;
+ import java.util.concurrent.CompletableFuture;
+ import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.ConcurrentLinkedQueue;
+ import java.util.concurrent.TimeUnit;
+ import java.util.function.Consumer;
+ 
+@@ -64,6 +66,7 @@ public class MultiPaperConnection extends ServerBoundMessageHandler {
+     private boolean channelActive = false;
+     private long lastPingReceived;
+     private final Set<MasterBoundMessage> unhandledRequests = ConcurrentHashMap.newKeySet();
++    private final Queue<Runnable> pendingSends = new ConcurrentLinkedQueue<>();
+     private final Map<String, ExternalServer> serversMap = new ConcurrentHashMap<>();
+     public String secret;
+     public Map<String, byte[]> dataCache = Maps.newHashMap();
+@@ -133,6 +136,7 @@ public class MultiPaperConnection extends ServerBoundMessageHandler {
+         }
+ 
+         channelActive = true;
++        drainPending();
+         channel.flush();
+     }
+ 
+@@ -143,14 +147,10 @@ public class MultiPaperConnection extends ServerBoundMessageHandler {
+         connect();
+     }
+ 
+-    private void waitForActiveChannel() {
+-        while (channel == null || !channel.isActive() || !channelActive) {
+-            // Wait for channel to become active
+-            try {
+-                Thread.sleep(50);
+-            } catch (InterruptedException e) {
+-                e.printStackTrace();
+-            }
++    private void drainPending() {
++        Runnable r;
++        while ((r = pendingSends.poll()) != null) {
++            r.run();
+         }
+     }
+ 
+@@ -170,17 +170,29 @@ public class MultiPaperConnection extends ServerBoundMessageHandler {
+     }
+ 
+     public void send(MasterBoundMessage message) {
+-        waitForActiveChannel();
+-        channel.writeAndFlush(message);
++        if (channelActive && channel != null) {
++            channel.writeAndFlush(message);
++            return;
++        }
++        pendingSends.offer(() -> channel.writeAndFlush(message));
++        if (channelActive && channel != null) drainPending();
+     }
+ 
+     public void send(MasterBoundMessage message, Consumer<ServerBoundMessage> callback) {
+-        waitForActiveChannel();
+-        unhandledRequests.add(message);
+-        send(setCallback(message, reply -> {
++        MasterBoundMessage wrapped = setCallback(message, reply -> {
+             unhandledRequests.remove(message);
+             callback.accept(reply);
+-        }));
++        });
++        if (channelActive && channel != null) {
++            unhandledRequests.add(message);
++            channel.writeAndFlush(wrapped);
++            return;
++        }
++        pendingSends.offer(() -> {
++            unhandledRequests.add(message);
++            channel.writeAndFlush(wrapped);
++        });
++        if (channelActive && channel != null) drainPending();
+     }
+ 
+     public <T extends ServerBoundMessage> CompletableFuture<T> sendAndAwaitReply(MasterBoundMessage message, Class<T> expectedClass) {
