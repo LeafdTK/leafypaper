@@ -30,6 +30,22 @@ allprojects {
             languageVersion.set(JavaLanguageVersion.of(17))
         }
     }
+
+    // Publish every subproject (and root) to GitHub Packages on the leafypaper
+    // repo. Credentials come from env vars in CI (GITHUB_ACTOR/GITHUB_TOKEN)
+    // or local gradle.properties (gpr.user/gpr.key) when publishing manually.
+    publishing {
+        repositories {
+            maven {
+                name = "GitHubPackages"
+                url = uri("https://maven.pkg.github.com/LeafdTK/leafypaper")
+                credentials {
+                    username = System.getenv("GITHUB_ACTOR") ?: project.findProperty("gpr.user") as String?
+                    password = System.getenv("GITHUB_TOKEN") ?: project.findProperty("gpr.key") as String?
+                }
+            }
+        }
+    }
 }
 
 subprojects {
