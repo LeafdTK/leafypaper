@@ -1,0 +1,321 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 12:20:06 -0400
+Subject: [PATCH] coalesce entity position updates + pre-encode broadcast
+ packets
+
+
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateCoalescer.java b/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateCoalescer.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..902e93219112d1d1938d1e1463315f8deb8165af
+--- /dev/null
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateCoalescer.java
+@@ -0,0 +1,91 @@
++package puregero.multipaper.externalserverprotocol;
++
++import net.minecraft.network.protocol.Packet;
++import net.minecraft.network.protocol.game.ClientboundMoveEntityPacket;
++import net.minecraft.network.protocol.game.ClientboundRotateHeadPacket;
++import net.minecraft.network.protocol.game.ClientboundSetEntityMotionPacket;
++import net.minecraft.network.protocol.game.ClientboundTeleportEntityPacket;
++import puregero.multipaper.ExternalServerConnection;
++import puregero.multipaper.MultiPaper;
++
++import java.util.Map;
++import java.util.UUID;
++import java.util.concurrent.ConcurrentHashMap;
++import java.util.concurrent.atomic.AtomicBoolean;
++
++/**
++ * Drops superseded position/motion packets before they hit the main thread.
++ *
++ * Under clustered-player load each receiving server can pull thousands of
++ * EntityUpdatePackets per second, every one of which used to schedule its own
++ * task on the Minecraft main thread. The queue would grow faster than it
++ * drained, and mirrored players appeared to freeze because their *latest*
++ * position update was stuck behind hundreds of stale ones.
++ *
++ * Position-style packets are last-write-wins by design — vanilla MC clients
++ * already cope with packet loss in this category. We collapse multiple updates
++ * for the same {@code (entity, packetClass)} into the most recent one and
++ * apply it from a single per-tick drain task.
++ */
++public final class EntityUpdateCoalescer {
++
++    private EntityUpdateCoalescer() {}
++
++    /**
++     * Most-recent pending update per (entityUuid, packetClass). Concurrent because
++     * Netty receive threads put while the main thread drains.
++     */
++    private static final Map<Key, Pending> pending = new ConcurrentHashMap<>();
++
++    /** True while a drain task has been scheduled and not yet started. */
++    private static final AtomicBoolean drainScheduled = new AtomicBoolean(false);
++
++    /**
++     * Position / rotation / velocity / teleport packets are safe to coalesce —
++     * each one carries the entity's *current* state in the relevant axis, so
++     * an older one is fully overridden by a newer one. Metadata, equipment,
++     * animations etc. carry deltas and must not be coalesced.
++     */
++    public static boolean isCoalescable(Packet<?> packet) {
++        return packet instanceof ClientboundMoveEntityPacket
++                || packet instanceof ClientboundTeleportEntityPacket
++                || packet instanceof ClientboundSetEntityMotionPacket
++                || packet instanceof ClientboundRotateHeadPacket;
++    }
++
++    public static void enqueue(ExternalServerConnection connection,
++                               UUID world,
++                               UUID entityUuid,
++                               long chunkPos,
++                               Packet<?> packet) {
++        pending.put(new Key(entityUuid, packet.getClass()),
++                new Pending(connection, world, entityUuid, chunkPos, packet));
++        if (drainScheduled.compareAndSet(false, true)) {
++            MultiPaper.runSync(EntityUpdateCoalescer::drain);
++        }
++    }
++
++    private static void drain() {
++        // Release the slot before iterating: any put that races us after this
++        // line will schedule a fresh drain, ensuring no updates get stranded.
++        drainScheduled.set(false);
++
++        // Weakly-consistent iteration over the live map. The CAS-remove makes
++        // sure we don't apply a stale Pending that has since been replaced by
++        // a newer one (the newer one will be drained on the next tick).
++        pending.forEach((key, value) -> {
++            if (pending.remove(key, value)) {
++                EntityUpdatePacket.applyOnMain(value.connection, value.world,
++                        value.entityUuid, value.chunkPos, value.packet, 0);
++            }
++        });
++    }
++
++    private record Key(UUID entityUuid, Class<? extends Packet> packetClass) {}
++
++    private record Pending(ExternalServerConnection connection,
++                           UUID world,
++                           UUID entityUuid,
++                           long chunkPos,
++                           Packet<?> packet) {}
++}
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdatePacket.java b/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdatePacket.java
+index 4e7d66ad3a0eb32e0bdc1c14d659fc9fafc00609..44759671dc47d73676ea8a4a999c88aaced94cf1 100644
+--- a/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdatePacket.java
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdatePacket.java
+@@ -37,11 +37,43 @@ public class EntityUpdatePacket extends ExternalServerPacket {
+ 
+     private final long chunkPos;
+ 
++    /**
++     * Pre-serialized inner packet bytes: {@code varint(packetId) || packet.write(buf)}.
++     * Populated eagerly in the outbound constructor so that broadcasting the same
++     * EntityUpdatePacket to N peer servers no longer re-runs the (expensive)
++     * Minecraft packet serializer N times. Null for the inbound constructor —
++     * we keep the decoded {@link #packet} and never re-serialize it.
++     */
++    private final byte[] preEncodedInner;
++
+     public EntityUpdatePacket(Entity entity, Packet<?> packet) {
+         this.world = ((ServerLevel) entity.level()).uuid;
+         this.uuid = entity.getUUID();
+         this.packet = packet;
+         this.chunkPos = entity.chunkPosition().longKey;
++        this.preEncodedInner = serializeInner(packet);
++    }
++
++    private static byte[] serializeInner(Packet<?> packet) {
++        ConnectionProtocol protocol = ConnectionProtocol.getProtocolForPacket(packet);
++        Integer id = protocol.getPacketId(PacketFlow.CLIENTBOUND, packet);
++        ByteBuf buf = Unpooled.buffer();
++        try {
++            FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(buf);
++            friendlyByteBuf.writeVarInt(id);
++            // Inhibit recursive update-generation that LivingEntity gates on.
++            threadsWritingUpdatePackets.add(Thread.currentThread().getId());
++            try {
++                packet.write(friendlyByteBuf);
++            } finally {
++                threadsWritingUpdatePackets.remove(Thread.currentThread().getId());
++            }
++            byte[] bytes = new byte[buf.readableBytes()];
++            buf.readBytes(bytes);
++            return bytes;
++        } finally {
++            buf.release();
++        }
+     }
+ 
+     public EntityUpdatePacket(FriendlyByteBuf in) {
+@@ -53,64 +85,72 @@ public class EntityUpdatePacket extends ExternalServerPacket {
+         int packetId = friendlyByteBuf.readVarInt();
+         packet = ConnectionProtocol.PLAY.createPacket(PacketFlow.CLIENTBOUND, packetId, friendlyByteBuf);
+         this.chunkPos = in.readLong();
++        this.preEncodedInner = null;
+     }
+ 
+     @Override
+     public void write(FriendlyByteBuf out) {
+         out.writeUUID(world);
+         out.writeUUID(uuid);
+-
+-        ConnectionProtocol protocol = ConnectionProtocol.getProtocolForPacket(packet);
+-        Integer id = protocol.getPacketId(PacketFlow.CLIENTBOUND, packet);
+-        ByteBuf buf = Unpooled.buffer();
+-        FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(buf);
+-        friendlyByteBuf.writeVarInt(id);
+-        threadsWritingUpdatePackets.add(Thread.currentThread().getId());
+-        packet.write(friendlyByteBuf);
+-        threadsWritingUpdatePackets.remove(Thread.currentThread().getId());
+-        out.writeByteArray(buf.array());
++        // preEncodedInner is populated by the outbound constructor. For the
++        // inbound path (if a received packet is somehow re-forwarded) we fall
++        // back to serializing the wrapped Minecraft packet on demand.
++        out.writeByteArray(preEncodedInner != null ? preEncodedInner : serializeInner(packet));
+         out.writeLong(this.chunkPos);
+     }
+ 
+     @Override
+     public void handle(ExternalServerConnection connection) {
+-        MultiPaper.runSync(() -> handleLater(connection, 0));
++        if (EntityUpdateCoalescer.isCoalescable(packet)) {
++            // Position / rotation / motion / teleport: drop superseded updates
++            // for the same entity to keep the main-thread queue small under
++            // clustered-player load.
++            EntityUpdateCoalescer.enqueue(connection, world, uuid, chunkPos, packet);
++            return;
++        }
++        MultiPaper.runSync(() -> applyOnMain(connection, world, uuid, chunkPos, packet, 0));
+     }
+ 
+-    private void handleLater(ExternalServerConnection connection, int depth) {
++    /**
++     * Apply an entity update on the main thread. Must be called from the main
++     * thread (callers go through {@link MultiPaper#runSync}). Shared between
++     * the direct path (non-coalescable packets) and the coalescer drain path.
++     */
++    static void applyOnMain(ExternalServerConnection connection,
++                            UUID world,
++                            UUID uuid,
++                            long chunkPos,
++                            Packet<?> packet,
++                            int depth) {
+         World bukkitWorld = Bukkit.getWorld(world);
++        if (!(bukkitWorld instanceof CraftWorld craftWorld)) return;
+ 
+-        if (bukkitWorld instanceof CraftWorld craftWorld) {
+-            ServerLevel level = craftWorld.getHandle();
+-            Entity entity = level.getEntityLookup().getEntityIgnoringAccessible(uuid);
+-            if (entity == null) {
+-                if (EntityRemovePacket.removedEntities.containsKey(uuid)) {
+-                    return;
+-                }
+-
+-                // If we can't find the entity, try again later,
+-                // the spawn entity packet is probably coming later
++        ServerLevel level = craftWorld.getHandle();
++        Entity entity = level.getEntityLookup().getEntityIgnoringAccessible(uuid);
++        if (entity == null) {
++            if (EntityRemovePacket.removedEntities.containsKey(uuid)) {
++                return;
++            }
+ 
+-                // first we check if we really need to request the entity by checking if entity's chunk is loaded
+-                if (!level.getEntityLookup().isChunkLoaded(new ChunkPos(this.chunkPos))) {
+-                    return;
+-                }
++            // The entity might still be spawning; defer if its chunk is loaded.
++            if (!level.getEntityLookup().isChunkLoaded(new ChunkPos(chunkPos))) {
++                return;
++            }
+ 
+-                if (depth > 5) {
+-                    if (depth >= 20) {
+-                        LOGGER.warn("Could not find entity " + uuid + " for " + packet.getClass().getSimpleName() + ", requesting it");
+-                    }
+-                    RequestEntityPacket.requestEntity(connection, world, uuid);
+-                    return;
++            if (depth > 5) {
++                if (depth >= 20) {
++                    LOGGER.warn("Could not find entity " + uuid + " for " + packet.getClass().getSimpleName() + ", requesting it");
+                 }
+-
+-                ((CraftScheduler) Bukkit.getScheduler()).scheduleInternalTask(() -> {
+-                    handleLater(connection, depth + 1);
+-                }, 1, "EntityUpdatePacket-handleLaters");
++                RequestEntityPacket.requestEntity(connection, world, uuid);
+                 return;
+             }
+ 
+-            MultiPaperEntitiesHandler.handleEntityUpdate(connection, entity, packet);
++            ((CraftScheduler) Bukkit.getScheduler()).scheduleInternalTask(() -> {
++                applyOnMain(connection, world, uuid, chunkPos, packet, depth + 1);
++            }, 1, "EntityUpdatePacket-handleLaters");
++            return;
+         }
++
++        MultiPaperEntitiesHandler.handleEntityUpdate(connection, entity, packet);
+     }
+ }
+diff --git a/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateWithDependenciesPacket.java b/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateWithDependenciesPacket.java
+index a8bc60d3cddaaee3d23c0693f7f5b720cab4ac0a..2c4995841f1c1c19857ad8bdb89ad08f1fbe007d 100644
+--- a/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateWithDependenciesPacket.java
++++ b/src/main/java/puregero/multipaper/externalserverprotocol/EntityUpdateWithDependenciesPacket.java
+@@ -39,6 +39,7 @@ public class EntityUpdateWithDependenciesPacket extends ExternalServerPacket {
+     private final UUID[] uuids;
+     private final Packet<?> packet;
+     private final long chunkPos;
++    private final byte[] preEncodedInner;
+ 
+     public EntityUpdateWithDependenciesPacket(Entity entity, Collection<Entity> dependents, Packet<?> packet) {
+         this.world = ((ServerLevel) entity.level()).uuid;
+@@ -46,6 +47,23 @@ public class EntityUpdateWithDependenciesPacket extends ExternalServerPacket {
+         this.uuids = dependents.stream().filter(Objects::nonNull).map(Entity::getUUID).toArray(UUID[]::new);
+         this.packet = packet;
+         this.chunkPos = entity.chunkPosition().longKey;
++        this.preEncodedInner = serializeInner(packet);
++    }
++
++    private static byte[] serializeInner(Packet<?> packet) {
++        ConnectionProtocol protocol = ConnectionProtocol.getProtocolForPacket(packet);
++        Integer id = protocol.getPacketId(PacketFlow.CLIENTBOUND, packet);
++        ByteBuf buf = Unpooled.buffer();
++        try {
++            FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(buf);
++            friendlyByteBuf.writeVarInt(id);
++            packet.write(friendlyByteBuf);
++            byte[] bytes = new byte[buf.readableBytes()];
++            buf.readBytes(bytes);
++            return bytes;
++        } finally {
++            buf.release();
++        }
+     }
+ 
+     public EntityUpdateWithDependenciesPacket(FriendlyByteBuf in) {
+@@ -63,6 +81,7 @@ public class EntityUpdateWithDependenciesPacket extends ExternalServerPacket {
+         int packetId = friendlyByteBuf.readVarInt();
+         packet = ConnectionProtocol.PLAY.createPacket(PacketFlow.CLIENTBOUND, packetId, friendlyByteBuf);
+         this.chunkPos = in.readLong();
++        this.preEncodedInner = null;
+     }
+ 
+     @Override
+@@ -75,13 +94,7 @@ public class EntityUpdateWithDependenciesPacket extends ExternalServerPacket {
+             out.writeUUID(uuid);
+         }
+ 
+-        ConnectionProtocol protocol = ConnectionProtocol.getProtocolForPacket(packet);
+-        Integer id = protocol.getPacketId(PacketFlow.CLIENTBOUND, packet);
+-        ByteBuf buf = Unpooled.buffer();
+-        FriendlyByteBuf friendlyByteBuf = new FriendlyByteBuf(buf);
+-        friendlyByteBuf.writeVarInt(id);
+-        packet.write(friendlyByteBuf);
+-        out.writeByteArray(buf.array());
++        out.writeByteArray(preEncodedInner != null ? preEncodedInner : serializeInner(packet));
+         out.writeLong(this.chunkPos);
+     }
+ 

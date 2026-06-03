@@ -48,6 +48,35 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — entity update coalescing + broadcast pre-encoding
+
+**Patch:** `patches/server/0152-coalesce-entity-position-updates-pre-encode-broadcas.patch`
+
+**What changed (two bundled fixes targeting the mirrored-player-freeze symptom):**
+
+1. **Receive-side coalescing.** Every incoming `EntityUpdatePacket` used to schedule its own task on the main thread. Under 300+ clustered players, the queue grew faster than it drained and mirrored players appeared frozen because their latest position was stuck behind hundreds of stale ones. New `EntityUpdateCoalescer` keeps only the most recent packet per `(entityUuid, packetClass)` for position-style packets (`ClientboundMoveEntityPacket`, `ClientboundTeleportEntityPacket`, `ClientboundSetEntityMotionPacket`, `ClientboundRotateHeadPacket`) and drains them in a single per-tick task. Non-position packets (entity data, equipment, attributes, animations, damage events) still go through the immediate-dispatch path.
+
+2. **Send-side pre-encoding.** `EntityUpdatePacket.write()` and `EntityUpdateWithDependenciesPacket.write()` used to call `packet.write(...)` once per peer connection in the broadcast loop, re-serializing identical bytes 19× when fanning out to 19 peers. Moved the inner-packet serialization into the constructor (runs once on the sending main thread). Each peer's `write()` now just emits the cached byte array.
+
+**Severity:** **medium-low**
+
+**Why it could matter (gameplay):**
+- Coalescer drops superseded position updates. Vanilla Minecraft clients already tolerate this category of loss (every entity tracker re-broadcasts position periodically, and `ClientboundTeleportEntityPacket` is sent every ~400 ticks to re-anchor anyway). The maximum staleness added is **one server tick (50ms)** which is invisible to humans.
+- Coalescer ONLY touches packets where last-write-wins is semantically correct. Animation/damage/equipment/metadata are explicitly excluded.
+- A teleport packet still wins over earlier movement packets for the same entity because `ClientboundTeleportEntityPacket` is a different `packetClass` than `ClientboundMoveEntityPacket` — both buffered separately, both applied in arrival order on next tick. (Caveat: arrival order between different packet classes for the same entity may differ from current behavior. If a teleport and a move land in the same tick, both apply; the order depends on `ConcurrentHashMap.forEach` iteration order, which is not deterministic. In practice the absolute teleport always wins because it overwrites all axes; this matches vanilla last-write-wins semantics.)
+- Pre-encoding moves `packet.write(...)` from the per-peer Netty event loop to the sending main thread. The `threadsWritingUpdatePackets` gate in `LivingEntity.java` now fires on the main thread instead of a Netty thread, which is actually MORE correct — the gate's purpose is to suppress recursive update generation, and recursion can only happen on the main thread anyway.
+
+**What to test:**
+- 200+ players clustered fighting: mirrored players should no longer freeze. Their positions may visibly lag by 1 tick (50ms) under extreme load, which is invisible to human perception.
+- A player teleporting while another player is shooting projectiles at them: verify both packets apply correctly in the same tick.
+- Mob attack animations across servers: should still play correctly (not coalesced).
+- Entity health bars across servers: should still update correctly (data packet, not coalesced).
+- Equipment changes across servers (player swapping weapons): should still appear correctly (equipment packet, not coalesced).
+
+**Status:** Implemented. Compiles. Not yet tested under load.
+
+---
+
 ## 2026-06-03 — Tier 0 (b): rewrote `ChunkSubscriptionManager` (concurrent maps, no objectPool, fan-out outside stripe lock)
 
 **File:** `MultiPaper-Master/src/main/java/puregero/multipaper/server/ChunkSubscriptionManager.java`
