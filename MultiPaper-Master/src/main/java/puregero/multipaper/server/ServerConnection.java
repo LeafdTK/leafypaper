@@ -138,6 +138,7 @@ public class ServerConnection extends MasterBoundMessageHandler {
     public void channelInactive(ChannelHandlerContext ctx) {
         EntitiesSubscriptionManager.unsubscribeAll(this);
         ChunkSubscriptionManager.unsubscribeAndUnlockAll(this);
+        puregero.multipaper.server.hotspot.RegionDensityTracker.forgetServer(this);
 
         synchronized (connections) {
             connections.remove(this);
@@ -411,5 +412,10 @@ public class ServerConnection extends MasterBoundMessageHandler {
     @Override
     public void handle(RequestEntityIdBlock message) {
         RequestEntityIdBlockHandler.handle(this, message);
+    }
+
+    @Override
+    public void handle(puregero.multipaper.mastermessagingprotocol.messages.masterbound.ReportRegionDensityMessage message) {
+        ReportRegionDensityHandler.handle(this, message);
     }
 }

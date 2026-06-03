@@ -48,6 +48,37 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — hotspot offload foundation (density reporting only)
+
+**Files added:**
+- `MultiPaper-MasterMessagingProtocol/.../ReportRegionDensityMessage.java`
+- `MultiPaper-Master/.../hotspot/{HotspotConfig,RegionDensityTracker}.java`
+- `MultiPaper-Master/.../handlers/ReportRegionDensityHandler.java`
+- `MultiPaper-Server/.../HotspotDensityReporter.java`
+- Patch `0157-add-hotspot-density-reporter.patch`
+
+**What's in this commit:**
+- New protocol message `ReportRegionDensityMessage` registered in `MasterBoundProtocol`. Wire-compatible append-only addition; older servers that don't send it are unaffected.
+- Server side reports player counts per region every 40 ticks (2s), delta-encoded (only emits when a count changes).
+- Master side aggregates contributions across all servers in `RegionDensityTracker`. Above-threshold regions are flagged.
+- Hotspot detection runs in **dry-run mode** by default — it logs candidates but performs **no ownership transfer**. The transfer protocol, crowd-server pool, and handover are deliberate follow-ups.
+
+**Severity:** **none** (in dry-run mode)
+- Master receives extra messages but does nothing irreversible with them.
+- Server emits ~hundreds of bytes/sec at steady state under normal play.
+- Region size, threshold, and cooldown are all JVM-property tunable.
+
+**Still to build before this is operational:**
+1. `TransferRegionOwnershipMessage` and the handover state machine.
+2. Crowd-server pool config (which servers are eligible to absorb hotspots).
+3. Selection policy (which crowd server takes which region under what tie-breaker).
+4. Subscriber re-sync after ownership transfer.
+5. Cooldowns and flap protection.
+
+**Status:** Foundation merged. Dry-run safe. Operationalization is a follow-up.
+
+---
+
 ## 2026-06-03 — optional multi-channel peer-to-peer connection
 
 **Patch:** `0156-add-optional-bulk-channel-for-peer-to-peer-connectio.patch`

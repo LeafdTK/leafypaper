@@ -48,6 +48,7 @@ public class MasterBoundProtocol extends Protocol<MasterBoundMessage> {
         addMessage(WriteStatsMessage.class, WriteStatsMessage::new);
         addMessage(WriteTickTimeMessage.class, WriteTickTimeMessage::new);
         addMessage(WriteUidMessage.class, WriteUidMessage::new);
+        addMessage(ReportRegionDensityMessage.class, ReportRegionDensityMessage::new);
     }
 
 }

@@ -1,0 +1,108 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 14:11:12 -0400
+Subject: [PATCH] add hotspot density reporter
+
+
+diff --git a/src/main/java/puregero/multipaper/HotspotDensityReporter.java b/src/main/java/puregero/multipaper/HotspotDensityReporter.java
+new file mode 100644
+index 0000000000000000000000000000000000000000..9e7d6f4e85dd0ea27466677d41a65cb1e5aba06c
+--- /dev/null
++++ b/src/main/java/puregero/multipaper/HotspotDensityReporter.java
+@@ -0,0 +1,83 @@
++package puregero.multipaper;
++
++import net.minecraft.server.MinecraftServer;
++import net.minecraft.server.level.ServerLevel;
++import net.minecraft.server.level.ServerPlayer;
++import puregero.multipaper.mastermessagingprotocol.messages.masterbound.ReportRegionDensityMessage;
++
++import java.util.HashMap;
++import java.util.Iterator;
++import java.util.Map;
++import java.util.Objects;
++
++/**
++ * Periodically tells the master how many real players are in each region of
++ * each world this server hosts. The master aggregates these reports cluster-
++ * wide to identify hotspots eligible for crowd-server offload.
++ *
++ * Only emits a message when a region's count has changed since the last
++ * report, so steady-state traffic is proportional to how much players are
++ * moving across region boundaries (~hundreds of bytes per second cluster-
++ * wide in typical play).
++ */
++public final class HotspotDensityReporter {
++
++    /** How many chunks per side in a region. Must match the master's setting. */
++    private static final int REGION_SIZE_CHUNKS = Integer.getInteger("multipaper.hotspot.regionSizeChunks", 16);
++    private static final int REGION_SHIFT = log2(REGION_SIZE_CHUNKS);
++
++    /** Ticks between population scans. 40 = 2s at 20 TPS. */
++    private static final int REPORT_INTERVAL_TICKS = Integer.getInteger("multipaper.hotspot.reportIntervalTicks", 40);
++
++    /** True when the feature is wired up. Toggled off to keep the path inert. */
++    private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("multipaper.hotspot.reporter", "true"));
++
++    private static final Map<RegionKey, Integer> lastReported = new HashMap<>();
++
++    private HotspotDensityReporter() {}
++
++    /** Call once per server tick. Cheap no-op outside the interval window. */
++    public static void tick() {
++        if (!ENABLED) return;
++        if (MinecraftServer.getServer().getTickCount() % REPORT_INTERVAL_TICKS != 0) return;
++
++        Map<RegionKey, Integer> current = new HashMap<>();
++        for (ServerLevel level : MinecraftServer.getServer().getAllLevels()) {
++            String world = level.getWorld().getName();
++            for (ServerPlayer player : level.players()) {
++                if (!MultiPaper.isRealPlayer(player)) continue;
++                int cx = player.chunkPosition().x;
++                int cz = player.chunkPosition().z;
++                RegionKey key = new RegionKey(world, cx >> REGION_SHIFT, cz >> REGION_SHIFT);
++                current.merge(key, 1, Integer::sum);
++            }
++        }
++
++        // Emit deltas: every changed region (including drops to zero).
++        for (Map.Entry<RegionKey, Integer> e : current.entrySet()) {
++            Integer prev = lastReported.get(e.getKey());
++            if (!Objects.equals(prev, e.getValue())) {
++                MultiPaper.getConnection().send(new ReportRegionDensityMessage(
++                        e.getKey().world, e.getKey().rx, e.getKey().rz, e.getValue()));
++            }
++        }
++        Iterator<Map.Entry<RegionKey, Integer>> it = lastReported.entrySet().iterator();
++        while (it.hasNext()) {
++            Map.Entry<RegionKey, Integer> e = it.next();
++            if (!current.containsKey(e.getKey())) {
++                MultiPaper.getConnection().send(new ReportRegionDensityMessage(
++                        e.getKey().world, e.getKey().rx, e.getKey().rz, 0));
++                it.remove();
++            }
++        }
++        lastReported.putAll(current);
++    }
++
++    private static int log2(int v) {
++        int shift = 0;
++        while (v > 1) { v >>= 1; shift++; }
++        return shift;
++    }
++
++    private record RegionKey(String world, int rx, int rz) {}
++}
+diff --git a/src/main/java/puregero/multipaper/MultiPaper.java b/src/main/java/puregero/multipaper/MultiPaper.java
+index 622180fd64e732d3e1359813f7da69e40f91b0f4..ca45fc68b26ae7d9b568344772ba6c776176c77e 100644
+--- a/src/main/java/puregero/multipaper/MultiPaper.java
++++ b/src/main/java/puregero/multipaper/MultiPaper.java
+@@ -156,6 +156,8 @@ public class MultiPaper {
+ 
+         MultiPaperExternalBlocksHandler.tick();
+ 
++        HotspotDensityReporter.tick();
++
+         boolean hasBeen10Seconds = last10Seconds < System.currentTimeMillis() - 10000;
+ 
+         if (hasBeen10Seconds) {
