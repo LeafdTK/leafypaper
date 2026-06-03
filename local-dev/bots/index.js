@@ -348,6 +348,10 @@ async function smoothWalkTo(bot, target, { withinBlocks = 2, timeoutMs = 20000 }
   const start = Date.now();
   let lastPos = bot.entity.position.clone();
   let stuckCheckTime = Date.now();
+  // Tick interval per-bot. With 30+ bots in one Node event loop, a 100ms
+  // tick saturates the loop and the server kicks bots for keepalive timeout.
+  // 300ms is still fluid-looking and gives the loop breathing room.
+  const TICK_MS = 300;
 
   bot.setControlState('forward', true);
   try {
@@ -359,8 +363,7 @@ async function smoothWalkTo(bot, target, { withinBlocks = 2, timeoutMs = 20000 }
       if (dist <= withinBlocks) break;
       if (Date.now() - start > timeoutMs) break;
 
-      // Face the target. The yaw-only lookAt keeps the head level which
-      // is what a walking player normally does.
+      // Face the target. Yaw-only keeps the head level like a walking player.
       const yaw = Math.atan2(-dx, -dz);
       await bot.look(yaw, 0, true).catch(() => {});
 
@@ -376,7 +379,7 @@ async function smoothWalkTo(bot, target, { withinBlocks = 2, timeoutMs = 20000 }
         stuckCheckTime = Date.now();
       }
 
-      await wait(100);
+      await wait(TICK_MS);
     }
   } finally {
     bot.setControlState('forward', false);

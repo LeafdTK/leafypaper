@@ -17,4 +17,4 @@ ENV BOT_COUNT=20 \
     CLUSTER_RADIUS=12 \
     STAGGER_MS=200
 
-CMD ["node", "index.js"]
+CMD ["node", "--max-old-space-size=2048", "index.js"]
