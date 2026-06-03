@@ -38,36 +38,54 @@ test session if you want to see the dry-run logs.
 First build takes 5–15 minutes (paperweight downloads upstream Purpur).
 Subsequent builds reuse Gradle's cache and are seconds.
 
-## Stress testing with synthetic bots
+## E2E bot fleet (real-player behaviors)
 
 There's a fourth container (`bots`) gated behind the `stress` compose
-profile so it doesn't run during a normal `up`. It launches a configurable
-mineflayer fleet that connects through the proxy and clusters near spawn.
+profile so it doesn't run during a normal `up`. Each bot picks a role
+from a weighted list and runs a loop that produces the kind of packets
+a real player would generate. Together they exercise the full leafypaper
+patch chain end-to-end.
 
 ```bash
-# default fleet (30 bots)
+# default fleet (20 bots, mixed roles)
 ./local-dev/up.sh stress
 
-# 100 bots in a tight 4-block cluster, moving every half second
-BOT_COUNT=100 CLUSTER_RADIUS=4 JITTER_MS=500 ./local-dev/up.sh stress
+# 100 bots, only fighters → fastest way to trigger the hotspot threshold
+BOT_COUNT=100 ROLE_OVERRIDE=fighter ./local-dev/up.sh stress
+
+# 50 travelers to churn chunk subscriptions across regions
+BOT_COUNT=50 ROLE_OVERRIDE=traveler ./local-dev/up.sh stress
 
 # detach so you can keep working
 docker compose -f local-dev/docker-compose.yml --profile stress up -d bots
 ```
 
-Knobs (env vars):
+Roles (weighted random when `ROLE_OVERRIDE` is unset):
 
-| Var               | Default  | What it does |
-|-------------------|----------|--------------|
-| `BOT_COUNT`       | 30       | total bots in the fleet |
-| `CLUSTER_RADIUS`  | 8        | bots roam inside this many blocks of the first spawn position |
-| `JITTER_MS`       | 2000     | how often each bot picks a new walk target |
-| `STAGGER_MS`      | 200      | delay between successive bot logins (avoid login pipeline storm) |
+| Role       | Weight | Exercises |
+|------------|--------|-----------|
+| `walker`   | 4      | pathfinder + cross-server position sync |
+| `fighter`  | 3      | attack packets, swing animations, damage events, density toward the cluster anchor |
+| `builder`  | 2      | block place packets (`SendUpdatePacket`) and inventory changes |
+| `miner`    | 2      | block break packets (`SendUpdatePacket`), inventory pickup |
+| `forager`  | 2      | eat / consume / equip across servers |
+| `sleeper`  | 1      | bed interaction across servers |
+| `traveler` | 2      | walks 200-800 blocks; churns chunk subscribe/unsubscribe across regions |
+| `horseman` | 1      | mount / dismount; passenger NBT propagation |
 
-The first bot's spawn point becomes the "cluster target" — every other
-bot walks toward that and jiggles. With `BOT_COUNT=100` and the master's
-threshold at the docker-compose default of 20, the hotspot coordinator
-will pick a transfer target within a few seconds.
+Knobs:
+
+| Var               | Default | What it does |
+|-------------------|---------|--------------|
+| `BOT_COUNT`       | 20      | total bots in the fleet |
+| `CLUSTER_RADIUS`  | 12      | walkers and fighters roam inside this many blocks of the anchor |
+| `STAGGER_MS`      | 200     | delay between successive bot logins (avoid login pipeline storm) |
+| `ROLE_OVERRIDE`   | _unset_ | force every bot into one role (debug) |
+
+The first bot to spawn anchors the cluster. Walkers and fighters stay
+within `CLUSTER_RADIUS` of the anchor so the hotspot threshold can fire.
+Travelers and horseman explore further out to exercise chunk-subscription
+churn and entity dependency propagation.
 
 Tail the master log while the fleet is running to see the scheduler's
 breakdown of every transfer decision:

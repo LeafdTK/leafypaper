@@ -104,9 +104,12 @@ services:
       - server1
       - server2
     environment:
-      BOT_COUNT: "${BOT_COUNT:-30}"
+      BOT_COUNT: "${BOT_COUNT:-20}"
       MC_HOST: master
       MC_PORT: "25577"
-      CLUSTER_RADIUS: "${CLUSTER_RADIUS:-8}"
-      JITTER_MS: "${JITTER_MS:-2000}"
+      CLUSTER_RADIUS: "${CLUSTER_RADIUS:-12}"
       STAGGER_MS: "${STAGGER_MS:-200}"
+      # Force every bot into one role (e.g. "fighter"). Unset for the
+      # weighted mix of walker/fighter/builder/miner/forager/sleeper/
+      # traveler/horseman.
+      ROLE_OVERRIDE: "${ROLE_OVERRIDE:-}"

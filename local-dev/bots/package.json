@@ -1,9 +1,10 @@
 {
   "name": "leafypaper-bots",
   "private": true,
-  "version": "0.0.1",
-  "description": "Synthetic player fleet for stress-testing leafypaper hotspot offload.",
+  "version": "0.0.2",
+  "description": "Role-based bot fleet that mimics real player behavior to exercise leafypaper end-to-end.",
   "dependencies": {
-    "mineflayer": "^4.21.0"
+    "mineflayer": "^4.21.0",
+    "mineflayer-pathfinder": "^2.4.5"
   }
 }
