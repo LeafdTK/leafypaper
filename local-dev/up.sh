@@ -25,6 +25,27 @@ case "${1:-}" in
         cd local-dev
         exec docker compose --profile stress up --build bots
         ;;
+    cmd)
+        # Send a console command to BOTH game servers via RCON.
+        # Usage: ./local-dev/up.sh cmd "time set day"
+        #        ./local-dev/up.sh cmd "op Leafd"
+        #        ./local-dev/up.sh cmd "gamerule doDaylightCycle false"
+        shift
+        if [ $# -eq 0 ]; then
+            echo "usage: $0 cmd <minecraft console command>" >&2
+            exit 1
+        fi
+        command="$*"
+        for server in server1:25575 server2:25576; do
+            name="${server%:*}"
+            port="${server#*:}"
+            echo "==> $name: $command"
+            docker run --rm --network local-dev_default itzg/rcon-cli \
+                --host="leafy-$name" --port="$port" --password=leafd "$command" \
+                2>&1 | sed "s/^/[$name] /" || true
+        done
+        exit 0
+        ;;
     --no-build)
         skip_build=1
         ;;

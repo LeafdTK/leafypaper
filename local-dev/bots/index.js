@@ -122,22 +122,30 @@ function spawnBot(idx) {
       clusterAnchor = bot.entity.position.clone();
       console.log(`cluster anchor locked at ${formatVec(clusterAnchor)}`);
     }
-    // Pathfinder needs to know what movements are allowed. Default movements
-    // are reasonable for vanilla survival.
+    // Pathfinder needs to know what movements are allowed. Conservative
+    // settings: no parkour, no sprinting, no breaking blocks for movement —
+    // those generate move deltas the server tags as "invalid_player_movement"
+    // and kicks the bot. Tradeoff: bots are slower, but they stay connected.
     const mcData = require('minecraft-data')(bot.version);
     const movements = new Movements(bot, mcData);
     movements.canDig = role === 'miner';
+    movements.allowParkour = false;
+    movements.allowSprinting = false;
     movements.allow1by1towers = role === 'builder';
-    movements.scafoldingBlocks = role === 'builder' ? mcData.blocksByName.dirt?.id ? [mcData.blocksByName.dirt.id] : [] : [];
+    movements.scafoldingBlocks = role === 'builder' && mcData.blocksByName.dirt
+      ? [mcData.blocksByName.dirt.id]
+      : [];
     bot.pathfinder.setMovements(movements);
 
-    // Kick off the role loop.
-    const handler = ROLE_HANDLERS[role];
-    if (handler) {
+    // Wait until the bot is settled on the ground before starting the role
+    // loop. Spawning mid-air + immediately walking has the same kick risk.
+    waitForGround(bot).then(() => {
+      const handler = ROLE_HANDLERS[role];
+      if (!handler) return;
       Promise.resolve(handler(bot, entry)).catch((err) => {
         console.warn(`${username} role handler crashed:`, err.message);
       });
-    }
+    });
   });
 
   bot.on('kicked', (reason) => console.warn(`${username} kicked: ${truncate(reason)}`));
