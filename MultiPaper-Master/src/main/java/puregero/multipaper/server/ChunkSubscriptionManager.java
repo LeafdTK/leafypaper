@@ -282,4 +282,28 @@ public class ChunkSubscriptionManager {
     public static List<ServerConnection> getSubscribers(String world, int cx, int cz) {
         return chunkSubscribers.getOrDefault(new ChunkKey(world, cx, cz), Collections.emptyList());
     }
+
+    /**
+     * Snapshot every chunk in {@code (world, cxLow..cxHigh, czLow..czHigh)}
+     * that currently has an owner. Used by hotspot offload to figure out
+     * which chunks in a region are worth transferring (chunks no one owns
+     * have no state to move and would only generate empty lock churn).
+     *
+     * Coordinates are returned packed as {@code (cx << 32) | (cz & 0xFFFFFFFFL)}.
+     */
+    public static long[] lockedChunksInRange(String world, int cxLow, int cxHigh, int czLow, int czHigh) {
+        // Iterate the map rather than scanning the (potentially huge) range:
+        // chunkLocks is bounded by "chunks loaded somewhere right now".
+        List<Long> hits = new ArrayList<>();
+        chunkLocks.forEach((key, owners) -> {
+            if (owners == null || owners.isEmpty()) return;
+            if (!key.world.equals(world)) return;
+            if (key.x < cxLow || key.x > cxHigh) return;
+            if (key.z < czLow || key.z > czHigh) return;
+            hits.add(((long) key.x << 32) | (key.z & 0xFFFFFFFFL));
+        });
+        long[] out = new long[hits.size()];
+        for (int i = 0; i < hits.size(); i++) out[i] = hits.get(i);
+        return out;
+    }
 }

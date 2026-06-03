@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 15:09:41 -0400
+Subject: [PATCH] claim only live chunks instead of full region
+
+
+diff --git a/src/main/java/puregero/multipaper/HotspotHandover.java b/src/main/java/puregero/multipaper/HotspotHandover.java
+index a9780607028e9bf8d821ffdea958e1c04ba28e01..cde880315469e726ed7be07ec7bb1906402187f7 100644
+--- a/src/main/java/puregero/multipaper/HotspotHandover.java
++++ b/src/main/java/puregero/multipaper/HotspotHandover.java
+@@ -52,12 +52,29 @@ public final class HotspotHandover {
+             return;
+         }
+ 
++        if (message.chunks != null && message.chunks.length > 0) {
++            // Explicit list from the master: claim only the chunks that
++            // actually have an owner right now (the common case post-extension).
++            LOGGER.info("[hotspot] claiming region world={} rx={} rz={} ({} live chunks of {} possible)",
++                    message.world, message.rx, message.rz,
++                    message.chunks.length, message.regionSizeChunks * message.regionSizeChunks);
++            for (long packed : message.chunks) {
++                int cx = (int) (packed >> 32);
++                int cz = (int) packed;
++                MultiPaper.getConnection().send(new SubscribeChunkMessage(message.world, cx, cz));
++                MultiPaper.getConnection().send(new LockChunkMessage(message.world, cx, cz, true));
++            }
++            return;
++        }
++
++        // Fallback for senders that don't include the explicit list (older
++        // master versions during a rolling upgrade): claim every chunk in
++        // the region as before.
+         int regionSize = message.regionSizeChunks;
+         int chunkXStart = message.rx * regionSize;
+         int chunkZStart = message.rz * regionSize;
+-        LOGGER.info("[hotspot] claiming region world={} rx={} rz={} ({} chunks)",
++        LOGGER.info("[hotspot] claiming region world={} rx={} rz={} ({} chunks, full sweep)",
+                 message.world, message.rx, message.rz, regionSize * regionSize);
+-
+         for (int dx = 0; dx < regionSize; dx++) {
+             for (int dz = 0; dz < regionSize; dz++) {
+                 int cx = chunkXStart + dx;

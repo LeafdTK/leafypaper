@@ -100,15 +100,24 @@ public final class HotspotCoordinator {
             }
             ServerConnection crowd = decision.chosen();
 
+            // Only transfer chunks that currently have an owner. Empty/unowned
+            // chunks in the region have no state to move and would just churn
+            // the master with empty subscribe+lock pairs.
+            int rs = HotspotConfig.REGION_SIZE_CHUNKS;
+            int cxLow = region.rx() * rs;
+            int czLow = region.rz() * rs;
+            long[] chunks = ChunkSubscriptionManager.lockedChunksInRange(
+                    region.world(), cxLow, cxLow + rs - 1, czLow, czLow + rs - 1);
+
             if (HotspotConfig.DRY_RUN) {
                 System.out.println("[hotspot] DRY-RUN would transfer region " + key +
-                        " (total=" + region.total() + ") to " + crowd.getBungeeCordName() +
+                        " (total=" + region.total() + ", " + chunks.length + " live chunks) to " + crowd.getBungeeCordName() +
                         " score=" + decision.score() + " (" + decision.breakdown() + ")");
             } else {
                 crowd.send(new TransferRegionOwnershipMessage(region.world(), region.rx(), region.rz(),
-                        HotspotConfig.REGION_SIZE_CHUNKS));
+                        HotspotConfig.REGION_SIZE_CHUNKS, chunks));
                 System.out.println("[hotspot] transferred region " + key +
-                        " (total=" + region.total() + ") to " + crowd.getBungeeCordName() +
+                        " (total=" + region.total() + ", " + chunks.length + " live chunks) to " + crowd.getBungeeCordName() +
                         " score=" + decision.score() + " (" + decision.breakdown() + ")");
                 active.put(key, new ActiveTransfer(crowd, 0L));
             }
@@ -160,14 +169,20 @@ public final class HotspotCoordinator {
      */
     private static void releaseRegion(RegionDensityTracker.RegionKey key, ServerConnection crowdServer) {
         int regionSize = HotspotConfig.REGION_SIZE_CHUNKS;
-        int cxStart = key.rx() * regionSize;
-        int czStart = key.rz() * regionSize;
-        for (int dx = 0; dx < regionSize; dx++) {
-            for (int dz = 0; dz < regionSize; dz++) {
-                ChunkSubscriptionManager.unlock(crowdServer, key.world(), cxStart + dx, czStart + dz);
-            }
+        int cxLow = key.rx() * regionSize;
+        int czLow = key.rz() * regionSize;
+        // Only unlock chunks the crowd server actually holds — empty chunks
+        // weren't locked in the first place, so iterating the full 16x16
+        // grid just wastes lock-manager work.
+        long[] live = ChunkSubscriptionManager.lockedChunksInRange(
+                key.world(), cxLow, cxLow + regionSize - 1, czLow, czLow + regionSize - 1);
+        for (long packed : live) {
+            int cx = (int) (packed >> 32);
+            int cz = (int) packed;
+            ChunkSubscriptionManager.unlock(crowdServer, key.world(), cx, cz);
         }
-        System.out.println("[hotspot] released region " + key + " from crowd server " + crowdServer.getBungeeCordName());
+        System.out.println("[hotspot] released region " + key +
+                " (" + live.length + " live chunks) from crowd server " + crowdServer.getBungeeCordName());
     }
 
     /**
