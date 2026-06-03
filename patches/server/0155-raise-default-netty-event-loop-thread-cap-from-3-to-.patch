@@ -1,0 +1,24 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 12:28:29 -0400
+Subject: [PATCH] raise default netty event-loop thread cap from 3 to 8
+
+
+diff --git a/src/main/java/puregero/multipaper/MultiPaperConnection.java b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+index eea63f4bbdabe8d22142d1e1b2908a4430f9c637..0d3105056b51d1f93b198fda26fdf608046cf7d0 100644
+--- a/src/main/java/puregero/multipaper/MultiPaperConnection.java
++++ b/src/main/java/puregero/multipaper/MultiPaperConnection.java
+@@ -73,7 +73,12 @@ public class MultiPaperConnection extends ServerBoundMessageHandler {
+     public int port = -1;
+ 
+     public MultiPaperConnection() {
+-        System.setProperty("multipaper.netty.threads", System.getProperty("multipaper.netty.threads", Integer.toString(Math.min(Runtime.getRuntime().availableProcessors(), 3))));
++        // Cap at 8 (was 3): one shared event loop pool handles both the master
++        // connection and every peer-to-peer connection. With 20+ peers and
++        // heavy entity-sync traffic, 3 threads gets oversubscribed and inbound
++        // packets queue waiting for thread time. Operator can still override
++        // with -Dmultipaper.netty.threads=N.
++        System.setProperty("multipaper.netty.threads", System.getProperty("multipaper.netty.threads", Integer.toString(Math.min(Runtime.getRuntime().availableProcessors(), 8))));
+         myName = MultiPaperConfiguration.get().masterConnection.myName;
+         bootstrap = new MessageBootstrap<>(new ServerBoundProtocol(), new MasterBoundProtocol(), channel -> channel.pipeline().addLast(this));
+         MessageBootstrap.getEventLoopGroup().scheduleAtFixedRate(this::ping, 0, PING_TIMEOUT / 4, TimeUnit.MILLISECONDS);
