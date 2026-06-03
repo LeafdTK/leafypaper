@@ -161,8 +161,9 @@ function spawnBot(idx) {
 async function roleWalker(bot, entry) {
   while (bot.entity) {
     const goal = pickClusterDestination();
-    await bot.pathfinder.goto(new goals.GoalNear(goal.x, goal.y, goal.z, 2)).catch(() => {});
+    await smoothWalkTo(bot, goal, { withinBlocks: 2, timeoutMs: 15000 });
     await wait(2000 + Math.random() * 3000);
+    await idleLook(bot, 1500 + Math.random() * 2000);
   }
 }
 
@@ -175,13 +176,18 @@ async function roleFighter(bot, entry) {
       (e.type === 'mob' || e.type === 'player' || e.type === 'animal')
     );
     if (target) {
-      bot.lookAt(target.position.offset(0, 1.6, 0), true).catch(() => {});
+      await bot.lookAt(target.position.offset(0, 1.6, 0), true).catch(() => {});
       bot.attack(target);
       bot.swingArm('right');
+      // tiny strafe so the fighter isn't a perfectly stationary turret
+      const dir = Math.random() < 0.5 ? 'left' : 'right';
+      bot.setControlState(dir, true);
+      await wait(200 + Math.random() * 200);
+      bot.setControlState(dir, false);
     } else {
       // Drift toward the cluster anchor so fighters concentrate density.
       const dest = pickClusterDestination(4);
-      await bot.pathfinder.goto(new goals.GoalNear(dest.x, dest.y, dest.z, 2)).catch(() => {});
+      await smoothWalkTo(bot, dest, { withinBlocks: 2, timeoutMs: 8000 });
     }
     await wait(600 + Math.random() * 400);
   }
@@ -240,8 +246,9 @@ async function roleForager(bot, entry) {
     }
     // Also wander a bit so foragers aren't perfectly stationary.
     const dest = pickClusterDestination(16);
-    await bot.pathfinder.goto(new goals.GoalNear(dest.x, dest.y, dest.z, 3)).catch(() => {});
-    await wait(4000 + Math.random() * 4000);
+    await smoothWalkTo(bot, dest, { withinBlocks: 3, timeoutMs: 12000 });
+    await idleLook(bot, 3000 + Math.random() * 3000);
+    await wait(2000 + Math.random() * 3000);
   }
 }
 
@@ -262,6 +269,8 @@ async function roleSleeper(bot, entry) {
 
 async function roleTraveler(bot, entry) {
   // Walk far from spawn to churn chunk subscriptions across regions.
+  // Use smooth walking instead of pathfinder so the motion looks continuous
+  // from a third-party observer's perspective.
   while (bot.entity) {
     const angle = Math.random() * Math.PI * 2;
     const dist = 200 + Math.random() * 600;
@@ -270,8 +279,8 @@ async function roleTraveler(bot, entry) {
       y: Math.round(bot.entity.position.y),
       z: Math.round(bot.entity.position.z + Math.sin(angle) * dist),
     };
-    await bot.pathfinder.goto(new goals.GoalNear(target.x, target.y, target.z, 5)).catch(() => {});
-    await wait(1000);
+    await smoothWalkTo(bot, target, { withinBlocks: 5, timeoutMs: 60000 });
+    await wait(1500 + Math.random() * 1500);
   }
 }
 
@@ -308,6 +317,83 @@ function pickClusterDestination(radius) {
 
 function wait(ms) {
   return new Promise((res) => setTimeout(res, ms));
+}
+
+// Resolves once the bot has touched ground (or after a 5s timeout so a
+// stuck bot doesn't block forever). Walking before the spawn fall completes
+// produces moves the server tags as "invalid_player_movement".
+function waitForGround(bot, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const tick = () => {
+      if (!bot.entity) return resolve();
+      if (bot.entity.onGround) return resolve();
+      if (Date.now() - start > timeoutMs) return resolve();
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+// Smooth, continuous walking that looks like a real player from the
+// outside: face the target, hold "forward" pressed, periodically re-aim,
+// jump if we're stuck against a single-block obstacle, stop when we're
+// within `withinBlocks` of the target.
+//
+// This is intentionally NOT pathfinder — pathfinder issues big movement
+// deltas that look choppy from a third-party perspective and burst
+// position packets when many bots compute paths simultaneously.
+async function smoothWalkTo(bot, target, { withinBlocks = 2, timeoutMs = 20000 } = {}) {
+  if (!bot.entity) return;
+  const start = Date.now();
+  let lastPos = bot.entity.position.clone();
+  let stuckCheckTime = Date.now();
+
+  bot.setControlState('forward', true);
+  try {
+    while (bot.entity) {
+      const pos = bot.entity.position;
+      const dx = target.x - pos.x;
+      const dz = target.z - pos.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist <= withinBlocks) break;
+      if (Date.now() - start > timeoutMs) break;
+
+      // Face the target. The yaw-only lookAt keeps the head level which
+      // is what a walking player normally does.
+      const yaw = Math.atan2(-dx, -dz);
+      await bot.look(yaw, 0, true).catch(() => {});
+
+      // Stuck check: if we haven't moved >0.3 blocks in 1.5s, jump once.
+      if (Date.now() - stuckCheckTime > 1500) {
+        const moved = pos.distanceTo(lastPos);
+        if (moved < 0.3) {
+          bot.setControlState('jump', true);
+          await wait(150);
+          bot.setControlState('jump', false);
+        }
+        lastPos = pos.clone();
+        stuckCheckTime = Date.now();
+      }
+
+      await wait(100);
+    }
+  } finally {
+    bot.setControlState('forward', false);
+  }
+}
+
+// Make the bot turn its head around naturally a few times. Used during
+// idle pauses so bots don't look like statues between movements.
+async function idleLook(bot, durationMs) {
+  if (!bot.entity) return;
+  const start = Date.now();
+  while (bot.entity && Date.now() - start < durationMs) {
+    const yaw = (Math.random() - 0.5) * Math.PI * 2;
+    const pitch = (Math.random() - 0.5) * Math.PI / 3;
+    await bot.look(yaw, pitch, true).catch(() => {});
+    await wait(600 + Math.random() * 800);
+  }
 }
 
 function formatVec(v) {
