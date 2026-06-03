@@ -1,0 +1,47 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: LeafdTK <hi@leafd.dev>
+Date: Wed, 3 Jun 2026 12:25:30 -0400
+Subject: [PATCH] skip CompletableFuture chain in ExternalServerConnection.send
+ fast path
+
+
+diff --git a/src/main/java/puregero/multipaper/ExternalServerConnection.java b/src/main/java/puregero/multipaper/ExternalServerConnection.java
+index d966830d09daa16012d9189626593c7a96e9497e..053bcb31128e2d4c2843444efcddf3611ddc44bf 100644
+--- a/src/main/java/puregero/multipaper/ExternalServerConnection.java
++++ b/src/main/java/puregero/multipaper/ExternalServerConnection.java
+@@ -160,17 +160,25 @@ public class ExternalServerConnection extends ChannelInitializer<SocketChannel>
+ 
+     public void send(ExternalServerPacket packet) {
+         if (!channel.isOpen()) {
+-            new IOException("Channel is closed for " + externalServer.getName()).printStackTrace();
++            // Throw away — don't allocate an IOException + stack trace per send
++            // on a closed channel. Channel state is observable via isOpen().
++            return;
++        }
++        // Once the handshake completes, onConnect stays done forever. Hot path
++        // is "done" — avoid the CompletableFuture continuation allocation.
++        if (onConnect.isDone()) {
++            dispatchSend(packet);
+         } else {
+-            onConnect.thenRun(() -> {
+-                if (channel.eventLoop().inEventLoop()) {
+-                    lastPacketSent = System.currentTimeMillis();
+-                    channel.writeAndFlush(packet);
+-                } else {
+-                    lastPacketSent = System.currentTimeMillis();
+-                    channel.eventLoop().execute(() -> channel.writeAndFlush(packet));
+-                }
+-            });
++            onConnect.thenRun(() -> dispatchSend(packet));
++        }
++    }
++
++    private void dispatchSend(ExternalServerPacket packet) {
++        lastPacketSent = System.currentTimeMillis();
++        if (channel.eventLoop().inEventLoop()) {
++            channel.writeAndFlush(packet);
++        } else {
++            channel.eventLoop().execute(() -> channel.writeAndFlush(packet));
+         }
+     }
+ 

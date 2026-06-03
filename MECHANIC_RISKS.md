@@ -48,6 +48,20 @@ Severity scale:
 
 ---
 
+## 2026-06-03 — more entity-sync hot-path inefficiencies
+
+**Patches:**
+- `0153-pre-encode-PlayerActionPacket-and-SendUpdatePacket-f.patch`
+- `0154-skip-CompletableFuture-chain-in-ExternalServerConnec.patch`
+
+**What changed:**
+- `PlayerActionPacket` and `SendUpdatePacket` now pre-encode their inner Minecraft packet in the constructor (same pattern as `EntityUpdatePacket`). Saves N× serialization when broadcast to N peer servers — relevant under combat (player actions) and under piston/redstone activity (block updates).
+- `ExternalServerConnection.send()` previously did `onConnect.thenRun(...)` on every call, allocating a CompletableFuture continuation even when the connection was already established. Now we check `onConnect.isDone()` and inline the dispatch in the (overwhelmingly common) post-handshake case. Also removed `new IOException(...).printStackTrace()` on closed-channel sends — the channel state is observable via `isOpen()`, no need to allocate + log per dropped send.
+
+**Severity:** **none** — these are pure CPU/allocation optimizations. Wire bytes identical, message ordering identical, semantics identical. The only observable change is fewer per-second allocations and JIT-friendlier fast paths.
+
+---
+
 ## 2026-06-03 — entity update coalescing + broadcast pre-encoding
 
 **Patch:** `patches/server/0152-coalesce-entity-position-updates-pre-encode-broadcas.patch`
