@@ -4,8 +4,8 @@ import puregero.multipaper.mastermessagingprotocol.ChunkKey;
 
 public class ChunkLock {
 
-    private static final int LOCK_COUNT = 64;
-    private static final int LOCK_COUNT_MASK = 63;
+    private static final int LOCK_COUNT = 4096;
+    private static final int LOCK_COUNT_MASK = 4095;
     private static final Object[] locks = new Object[LOCK_COUNT];
 
     static {
