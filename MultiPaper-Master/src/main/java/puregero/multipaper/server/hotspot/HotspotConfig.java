@@ -58,6 +58,16 @@ public final class HotspotConfig {
     public static final int HOT_SIMULATION_DISTANCE = Integer.getInteger(
             "multipaper.hotspot.hotSimulationDistance", 4);
 
+    /**
+     * Comma-separated pinned hot regions for proxy-side routing affinity.
+     * Format: {@code world:rx,rz|world:rx,rz}. When set, the proxy plugin
+     * steers connecting players to {@code multipaper.hotspot.crowdServers}
+     * if any pinned region lies within their last-seen coordinates' region.
+     * Empty by default — proxy falls back to least-loaded routing.
+     */
+    public static final String PINNED_REGIONS_RAW = System.getProperty(
+            "multipaper.hotspot.pinnedRegions", "");
+
     /** chunk_x &gt;&gt; regionShift converts chunk coords to region coords. */
     public static int regionShift() {
         // log2(REGION_SIZE_CHUNKS), assuming power-of-two region size.

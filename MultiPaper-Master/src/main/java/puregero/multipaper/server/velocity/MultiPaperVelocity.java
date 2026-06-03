@@ -12,13 +12,16 @@ import com.velocitypowered.api.proxy.server.RegisteredServer;
 import org.slf4j.Logger;
 import puregero.multipaper.server.MultiPaperServer;
 import puregero.multipaper.server.ServerConnection;
+import puregero.multipaper.server.proxy.ProxyRouter;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.Collection;
+import java.util.List;
 
 @Plugin(id = "multipaper-velocity",
     name = "MultiPaper Velocity",
@@ -56,23 +59,26 @@ public class MultiPaperVelocity {
 
         if (this.balanceNodes && isMultiPaperServer(targetServer.getServerInfo().getName())) {
             Collection<RegisteredServer> servers = this.server.getAllServers();
-
-            RegisteredServer bestServer = null;
-            long lowestTickTime = Long.MAX_VALUE;
-
-            for (RegisteredServer server : servers) {
-                String serverName = server.getServerInfo().getName();
-                ServerConnection connection = ServerConnection.getConnection(serverName);
-
-                if (connection != null && ServerConnection.isAlive(serverName)
-                        && connection.getTimer().averageInMillis() < lowestTickTime) {
-                    lowestTickTime = connection.getTimer().averageInMillis();
-                    bestServer = server;
+            List<String> candidateNames = new ArrayList<>(servers.size());
+            for (RegisteredServer s : servers) {
+                if (isMultiPaperServer(s.getServerInfo().getName())) {
+                    candidateNames.add(s.getServerInfo().getName());
                 }
             }
 
-            if (bestServer != null) {
-                event.setResult(ServerPreConnectEvent.ServerResult.allowed(bestServer));
+            // Velocity's ServerPreConnectEvent doesn't expose a last-known
+            // chunk for the player. Sticky-session + crowd-pool routing in
+            // ProxyRouter still apply with nulls; coord affinity is a no-op.
+            String pick = ProxyRouter.pick(
+                    event.getPlayer().getUniqueId(), null, 0, 0, candidateNames);
+
+            if (pick != null) {
+                for (RegisteredServer s : servers) {
+                    if (s.getServerInfo().getName().equals(pick)) {
+                        event.setResult(ServerPreConnectEvent.ServerResult.allowed(s));
+                        break;
+                    }
+                }
             }
         }
     }

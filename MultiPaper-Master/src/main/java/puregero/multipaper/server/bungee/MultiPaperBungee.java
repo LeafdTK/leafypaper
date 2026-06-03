@@ -12,6 +12,7 @@ import net.md_5.bungee.config.YamlConfiguration;
 import net.md_5.bungee.event.EventHandler;
 import puregero.multipaper.server.MultiPaperServer;
 import puregero.multipaper.server.ServerConnection;
+import puregero.multipaper.server.proxy.ProxyRouter;
 
 import java.io.File;
 import java.io.IOException;
@@ -77,25 +78,26 @@ public class MultiPaperBungee extends Plugin implements Listener {
         }
 
         if (balanceNodes && isMultiPaperServer(event.getTarget().getName())) {
-            // They are connecting to a multipaper server
-
             List<ServerInfo> servers = new ArrayList<>(getProxy().getServers().values());
             Collections.shuffle(servers);
 
-            // Send them to the multipaper server with the lowest tick time
-            ServerInfo bestServer = null;
-            long lowestTickTime = Long.MAX_VALUE;
-
+            List<String> candidateNames = new ArrayList<>(servers.size());
             for (ServerInfo info : servers) {
-                ServerConnection connection = ServerConnection.getConnection(info.getName());
-                if (connection != null && ServerConnection.isAlive(info.getName()) && connection.getTimer().averageInMillis() < lowestTickTime) {
-                    lowestTickTime = connection.getTimer().averageInMillis();
-                    bestServer = info;
+                if (isMultiPaperServer(info.getName())) {
+                    candidateNames.add(info.getName());
                 }
             }
 
-            if (bestServer != null) {
-                event.setTarget(bestServer);
+            String pick = ProxyRouter.pick(
+                    event.getPlayer().getUniqueId(), null, 0, 0, candidateNames);
+
+            if (pick != null) {
+                for (ServerInfo info : servers) {
+                    if (info.getName().equals(pick)) {
+                        event.setTarget(info);
+                        break;
+                    }
+                }
             }
         }
     }
