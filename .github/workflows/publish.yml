@@ -54,6 +54,12 @@ jobs:
         env:
           GITHUB_ACTOR: ${{ github.actor }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Publish as `-SNAPSHOT` so successive CI runs can overwrite each
+          # other. GitHub Packages rejects re-pushes of non-SNAPSHOT Maven
+          # coordinates with 422, which is what the first attempt hit.
+          # `ORG_GRADLE_PROJECT_<name>` overrides the gradle.properties value
+          # of that name at invocation time.
+          ORG_GRADLE_PROJECT_masterVersion: 2.12.3-SNAPSHOT
         run: ./gradlew publish --stacktrace
 
       - name: Upload paperclip jar as workflow artifact
